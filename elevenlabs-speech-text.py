@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import mimetypes
+import re
 from pathlib import Path
 from elevenlabs.client import ElevenLabs
 from tqdm import tqdm
@@ -21,6 +22,10 @@ SLEEP_BETWEEN_REQUESTS = 1.5  # seconds
 OVERWRITE = False             # True: re-generate even if output exists
 # Show per-file byte-level upload progress. Set to True to display a small progress bar during file upload.
 PER_FILE_PROGRESS = True
+
+# Combine all transcripts into one TXT (one sentence per line)
+COMBINE_TXT = True
+COMBINED_TXT_NAME = "combined.txt"
 
 # Extensions we will accept in the input folder
 ALLOWED_EXTS = {
@@ -101,6 +106,78 @@ def words_to_srt(words, max_chars=84, max_dur=5.5):
         out_lines.append(tx)
         out_lines.append("")
     return "\n".join(out_lines)
+
+
+SENTENCE_END_RE = re.compile(r"[.!?…]+$")
+
+def normalize_spaces(text: str) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+([,.;:!?…])", r"\1", text)
+    return text
+
+def text_to_sentences(text: str):
+    text = normalize_spaces(text)
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?…])\s+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+def words_to_sentences(words):
+    parts = []
+    sentences = []
+
+    def flush():
+        nonlocal parts
+        if parts:
+            sentence = normalize_spaces("".join(parts))
+            if sentence:
+                sentences.append(sentence)
+        parts = []
+
+    for w in words or []:
+        txt = (w.get("text") or "").strip()
+        if not txt:
+            continue
+        t = w.get("type")
+        if t == "punctuation":
+            parts.append(txt)
+            if SENTENCE_END_RE.search(txt):
+                flush()
+            continue
+        if t != "word":
+            continue
+        if parts and not parts[-1].endswith((" ", "\n")):
+            parts.append(" ")
+        parts.append(txt)
+        if SENTENCE_END_RE.search(txt):
+            flush()
+
+    flush()
+    return sentences
+
+def payload_to_sentences(payload):
+    words = payload.get("words")
+    if isinstance(words, list) and words:
+        return words_to_sentences(words)
+    segments = payload.get("segments") or []
+    if segments:
+        text = " ".join([str(s.get("text", "")).strip() for s in segments])
+        return text_to_sentences(text)
+    return []
+
+def write_sentences_txt(sentences, out_path: Path):
+    out_path.write_text("\n".join(sentences) + ("\n" if sentences else ""), encoding="utf-8")
+
+def combine_dir_to_txt(out_dir: Path, ordered_stems, out_path: Path):
+    all_sentences = []
+    for stem in ordered_stems:
+        json_path = out_dir / f"{stem}.json"
+        if not json_path.exists():
+            continue
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        all_sentences.extend(payload_to_sentences(payload))
+    write_sentences_txt(all_sentences, out_path)
+    return len(all_sentences)
 
 # =========================
 # ENV KEY LOADING (same approach you used)
@@ -247,6 +324,12 @@ def main():
             tqdm.write(f"    ERROR on {audio_path.name}: {type(e).__name__}: {e}")
 
         time.sleep(SLEEP_BETWEEN_REQUESTS)
+
+    if COMBINE_TXT:
+        ordered_stems = [p.stem for p in audio_files]
+        out_txt = OUT_DIR / COMBINED_TXT_NAME
+        count = combine_dir_to_txt(OUT_DIR, ordered_stems, out_txt)
+        print(f"Wrote: {out_txt} ({count} sentences)")
 
     print("Done.")
 
