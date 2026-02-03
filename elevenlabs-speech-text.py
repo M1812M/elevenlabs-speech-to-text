@@ -5,6 +5,7 @@ import time
 import mimetypes
 import re
 from pathlib import Path
+from typing import Dict, Optional, List
 from elevenlabs.client import ElevenLabs
 from tqdm import tqdm
 
@@ -51,9 +52,10 @@ MIME_FALLBACK = {
 # SRT HELPERS
 # =========================
 def srt_timestamp(seconds: float) -> str:
+    # Convert seconds to SRT timestamp format.
     ms = int(round(seconds * 1000))
-    h = ms // 3_60_000
-    ms %= 3_60_000
+    h = ms // 3_600_000
+    ms %= 3_600_000
     m = ms // 60_000
     ms %= 60_000
     s = ms // 1000
@@ -61,12 +63,14 @@ def srt_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 def words_to_srt(words, max_chars=84, max_dur=5.5):
+    # Convert word tokens into simple SRT cues.
     cues = []
     cur_text = ""
     cur_start = None
     cur_end = None
 
     def flush():
+        # Finalize the current cue, if any.
         nonlocal cur_text, cur_start, cur_end
         if cur_text.strip() and cur_start is not None and cur_end is not None:
             cues.append((cur_start, cur_end, cur_text.strip()))
@@ -74,7 +78,7 @@ def words_to_srt(words, max_chars=84, max_dur=5.5):
         cur_start = None
         cur_end = None
 
-    for w in words:
+    for w in words or []:
         if w.get("type") != "word":
             continue
         txt = w.get("text", "")
@@ -109,30 +113,89 @@ def words_to_srt(words, max_chars=84, max_dur=5.5):
 
 
 SENTENCE_END_RE = re.compile(r"[.!?…]+$")
+SentenceItem = Dict[str, Optional[str]]
+
+
+def get_speaker_id(word: Dict) -> Optional[str]:
+    # Normalize speaker ID across possible payload shapes.
+    return word.get("speaker_id") or word.get("speaker")
 
 def normalize_spaces(text: str) -> str:
+    # Normalize whitespace and punctuation spacing.
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r"\s+([,.;:!?…])", r"\1", text)
     return text
 
 def text_to_sentences(text: str):
+    # Split plain text into sentences using punctuation boundaries.
     text = normalize_spaces(text)
     if not text:
         return []
     parts = re.split(r"(?<=[.!?…])\s+", text)
     return [p.strip() for p in parts if p.strip()]
 
-def words_to_sentences(words):
-    parts = []
-    sentences = []
+def sentence_items_from_text(text: str) -> List[SentenceItem]:
+    # Wrap plain sentences with empty speaker metadata.
+    return [{"text": s, "speaker": None} for s in text_to_sentences(text)]
+
+
+def compute_main_speaker(sentence_items: List[SentenceItem]) -> Optional[str]:
+    # Find the speaker who owns the most sentences.
+    counts: Dict[str, int] = {}
+    for item in sentence_items:
+        speaker_id = item.get("speaker")
+        if not speaker_id:
+            continue
+        counts[speaker_id] = counts.get(speaker_id, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def format_sentence_line(item: SentenceItem, main_speaker: Optional[str]) -> str:
+    # Prefix non-main speakers with their speaker id.
+    speaker_id = item.get("speaker")
+    text = item.get("text") or ""
+    if main_speaker and speaker_id and speaker_id != main_speaker:
+        return f"[{speaker_id}] {text}"
+    return text
+
+
+def words_to_sentence_items(words) -> List[SentenceItem]:
+    # Build sentence items (text + dominant speaker) from word tokens.
+    parts: List[str] = []
+    sentences: List[SentenceItem] = []
+    speaker_counts: Dict[str, int] = {}
+    speaker_order: Dict[str, int] = {}
+    order_idx = 0
+
+    def note_speaker(speaker_id: Optional[str]) -> None:
+        # Track speakers within the current sentence window.
+        nonlocal order_idx
+        if not speaker_id:
+            return
+        speaker_counts[speaker_id] = speaker_counts.get(speaker_id, 0) + 1
+        if speaker_id not in speaker_order:
+            speaker_order[speaker_id] = order_idx
+            order_idx += 1
+
+    def pick_sentence_speaker() -> Optional[str]:
+        # Choose the most frequent speaker in the sentence (ties by first seen).
+        if not speaker_counts:
+            return None
+        return max(speaker_counts.items(), key=lambda kv: (kv[1], -speaker_order[kv[0]]))[0]
 
     def flush():
-        nonlocal parts
+        # Emit the current sentence and reset buffers.
+        nonlocal parts, speaker_counts, speaker_order, order_idx
         if parts:
             sentence = normalize_spaces("".join(parts))
             if sentence:
-                sentences.append(sentence)
+                sentences.append({"text": sentence, "speaker": pick_sentence_speaker()})
         parts = []
+        speaker_counts = {}
+        speaker_order = {}
+        order_idx = 0
 
     for w in words or []:
         txt = (w.get("text") or "").strip()
@@ -149,40 +212,52 @@ def words_to_sentences(words):
         if parts and not parts[-1].endswith((" ", "\n")):
             parts.append(" ")
         parts.append(txt)
+        note_speaker(get_speaker_id(w))
         if SENTENCE_END_RE.search(txt):
             flush()
 
     flush()
     return sentences
 
-def payload_to_sentences(payload):
+
+def payload_to_sentence_items(payload) -> List[SentenceItem]:
+    # Extract sentence items from payload (prefers word-level timing).
     words = payload.get("words")
     if isinstance(words, list) and words:
-        return words_to_sentences(words)
+        return words_to_sentence_items(words)
     segments = payload.get("segments") or []
     if segments:
         text = " ".join([str(s.get("text", "")).strip() for s in segments])
-        return text_to_sentences(text)
+        return sentence_items_from_text(text)
     return []
 
-def write_sentences_txt(sentences, out_path: Path):
-    out_path.write_text("\n".join(sentences) + ("\n" if sentences else ""), encoding="utf-8")
+
+def write_sentences_txt(sentence_items: List[SentenceItem], out_path: Path, main_speaker: Optional[str] = None):
+    # Write sentences to TXT, tagging non-main speakers.
+    if main_speaker is None:
+        main_speaker = compute_main_speaker(sentence_items)
+    lines = [format_sentence_line(item, main_speaker) for item in sentence_items]
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
 
 def combine_dir_to_txt(out_dir: Path, ordered_stems, out_path: Path):
-    all_sentences = []
+    # Combine all JSON transcripts into one TXT.
+    all_sentences: List[SentenceItem] = []
     for stem in ordered_stems:
         json_path = out_dir / f"{stem}.json"
         if not json_path.exists():
             continue
         payload = json.loads(json_path.read_text(encoding="utf-8"))
-        all_sentences.extend(payload_to_sentences(payload))
-    write_sentences_txt(all_sentences, out_path)
+        all_sentences.extend(payload_to_sentence_items(payload))
+    main_speaker = compute_main_speaker(all_sentences)
+    write_sentences_txt(all_sentences, out_path, main_speaker=main_speaker)
     return len(all_sentences)
 
 # =========================
 # ENV KEY LOADING (same approach you used)
 # =========================
 def load_api_key() -> str:
+    # Resolve API key from env or .env file.
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if api_key:
         return api_key
@@ -222,12 +297,14 @@ def load_api_key() -> str:
 # CORE
 # =========================
 def guess_mime(path: Path) -> str:
+    # Guess MIME type with fallbacks for Windows.
     mime, _ = mimetypes.guess_type(str(path))
     if mime:
         return mime
     return MIME_FALLBACK.get(path.suffix.lower(), "application/octet-stream")
 
 def to_payload(result):
+    # Normalize SDK response objects into plain dicts.
     if hasattr(result, "model_dump"):
         return result.model_dump()
     if hasattr(result, "dict"):
@@ -238,17 +315,21 @@ def to_payload(result):
 class TqdmFileWrapper:
     """Wrap a file object so reads update a tqdm progress bar."""
     def __init__(self, f, pbar):
+        # Store file and progress bar references.
         self._f = f
         self._pbar = pbar
     def read(self, n=-1):
+        # Read and update progress.
         data = self._f.read(n)
         if data:
             self._pbar.update(len(data))
         return data
     def __getattr__(self, name):
+        # Delegate attribute access to the underlying file.
         return getattr(self._f, name)
 
 def main():
+    # CLI entry point for batch transcription.
     api_key = load_api_key()
 
     if not IN_DIR.exists():
@@ -318,7 +399,7 @@ def main():
             with open(out_srt, "w", encoding="utf-8") as out:
                 out.write(srt_text)
 
-            tqdm.write(f"    OK → {out_json.name}, {out_srt.name}")
+            tqdm.write(f"    OK -> {out_json.name}, {out_srt.name}")
 
         except Exception as e:
             tqdm.write(f"    ERROR on {audio_path.name}: {type(e).__name__}: {e}")
