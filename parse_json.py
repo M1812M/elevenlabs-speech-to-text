@@ -74,10 +74,16 @@ def compute_main_speaker(sentence_items: List[SentenceItem]) -> Optional[str]:
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
-def format_sentence_line(item: SentenceItem, main_speaker: Optional[str]) -> str:
-    # Prefix non-main speakers with their speaker id.
+def format_sentence_line(
+    item: SentenceItem,
+    main_speaker: Optional[str],
+    tag_all_speakers: bool = False,
+) -> str:
+    # Format sentence line, optionally tagging every speaker.
     speaker_id = item.get("speaker")
     text = item.get("text") or ""
+    if tag_all_speakers and speaker_id:
+        return f"[{speaker_id}] {text}"
     if main_speaker and speaker_id and speaker_id != main_speaker:
         return f"[{speaker_id}] {text}"
     return text
@@ -316,12 +322,60 @@ def write_srt(cues: List[Tuple[float, float, str]], out_path: Path) -> None:
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_txt_sentences(sentence_items: List[SentenceItem], out_path: Path, main_speaker: Optional[str] = None) -> None:
-    # Write sentences to TXT, tagging non-main speakers.
-    if main_speaker is None:
+def write_txt_sentences(
+    sentence_items: List[SentenceItem],
+    out_path: Path,
+    main_speaker: Optional[str] = None,
+    tag_all_speakers: bool = False,
+) -> None:
+    # Write sentences to TXT, optionally tagging all speakers.
+    if main_speaker is None and not tag_all_speakers:
         main_speaker = compute_main_speaker(sentence_items)
-    lines = [format_sentence_line(item, main_speaker) for item in sentence_items]
+    lines = [format_sentence_line(item, main_speaker, tag_all_speakers) for item in sentence_items]
     out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def build_speaker_remap(words: List[Dict]) -> Dict[str, str]:
+    # Build a per-file mapping so the dominant speaker becomes speaker_0.
+    stats: Dict[str, Dict[str, float]] = {}
+    for idx, w in enumerate(words):
+        if w.get("type") != "word":
+            continue
+        speaker_id = get_speaker_id(w)
+        if not speaker_id:
+            continue
+        try:
+            st = float(w.get("start", 0.0) or 0.0)
+            en = float(w.get("end", st) or st)
+        except (TypeError, ValueError):
+            st = 0.0
+            en = 0.0
+        dur = max(0.0, en - st)
+        if speaker_id not in stats:
+            stats[speaker_id] = {"dur": 0.0, "count": 0.0, "first": float(idx)}
+        stats[speaker_id]["dur"] += dur
+        stats[speaker_id]["count"] += 1.0
+    if not stats:
+        return {}
+    ordered = sorted(
+        stats.items(),
+        key=lambda kv: (-kv[1]["dur"], -kv[1]["count"], kv[1]["first"]),
+    )
+    return {speaker_id: f"speaker_{i}" for i, (speaker_id, _) in enumerate(ordered)}
+
+
+def remap_sentence_items(sentence_items: List[SentenceItem], remap: Dict[str, str]) -> List[SentenceItem]:
+    # Apply a speaker-id remap to sentence items.
+    if not remap:
+        return sentence_items
+    remapped: List[SentenceItem] = []
+    for item in sentence_items:
+        speaker_id = item.get("speaker")
+        if speaker_id and speaker_id in remap:
+            remapped.append({"text": item.get("text"), "speaker": remap[speaker_id]})
+        else:
+            remapped.append(item)
+    return remapped
 
 
 def build_sentences_from_payload(payload: Dict) -> List[SentenceItem]:
@@ -345,9 +399,10 @@ def combine_dir_to_txt(in_dir: Path, out_txt: Path) -> int:
     for p in json_files:
         payload = json.loads(p.read_text(encoding="utf-8"))
         sentences = build_sentences_from_payload(payload)
+        remap = build_speaker_remap(payload.get("words") or [])
+        sentences = remap_sentence_items(sentences, remap)
         all_sentences.extend(sentences)
-    main_speaker = compute_main_speaker(all_sentences)
-    write_txt_sentences(all_sentences, out_txt, main_speaker=main_speaker)
+    write_txt_sentences(all_sentences, out_txt, tag_all_speakers=True)
     return len(all_sentences)
 
 
@@ -368,7 +423,9 @@ def build_srt_for_dir(in_dir: Path) -> int:
 
         sentences = build_sentences_from_payload(payload)
         if sentences:
-            write_txt_sentences(sentences, out_txt)
+            remap = build_speaker_remap(payload.get("words") or [])
+            sentences = remap_sentence_items(sentences, remap)
+            write_txt_sentences(sentences, out_txt, tag_all_speakers=True)
 
     return total_cues
 
@@ -410,7 +467,9 @@ def main():
 
     sentences = build_sentences_from_payload(payload)
     if sentences:
-        write_txt_sentences(sentences, args.out_txt)
+        remap = build_speaker_remap(payload.get("words") or [])
+        sentences = remap_sentence_items(sentences, remap)
+        write_txt_sentences(sentences, args.out_txt, tag_all_speakers=True)
         print(f"Wrote: {args.out_txt} ({len(sentences)} sentences)")
 
     print(f"Language detected: {payload.get('language_code')} (p={payload.get('language_probability')})")
