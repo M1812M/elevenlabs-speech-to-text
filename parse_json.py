@@ -5,8 +5,12 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
-IN_JSON = BASE_DIR / "transcript.json"
-OUT_SRT = BASE_DIR / "transcript.srt"
+MEDIA_DIR = BASE_DIR / "media"
+JSON_DIR = MEDIA_DIR / "JSON"
+SRT_DIR = MEDIA_DIR / "SRT"
+TXT_DIR = MEDIA_DIR / "TXT"
+IN_JSON = JSON_DIR / "transcript.json"
+OUT_SRT = SRT_DIR / "transcript.srt"
 
 # Tuning knobs (good defaults for social + general subtitles)
 MAX_CHARS_PER_LINE = 42
@@ -319,6 +323,24 @@ def write_srt(cues: List[Tuple[float, float, str]], out_path: Path) -> None:
         lines.append(f"{srt_timestamp(st)} --> {srt_timestamp(en)}")
         lines.append(wrapped)
         lines.append("")  # blank line
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def sentence_srt_path(out_path: Path) -> Path:
+    # Build a sibling path like "file.sentence.srt".
+    return out_path.with_name(f"{out_path.stem}.sentence{out_path.suffix}")
+
+
+def write_sentence_srt(cues: List[Tuple[float, float, str]], out_path: Path) -> None:
+    # Serialize cues into an SRT file with cue number as visible subtitle text.
+    lines: List[str] = []
+    for i, (st, en, _text) in enumerate(cues, start=1):
+        lines.append(str(i))
+        lines.append(f"{srt_timestamp(st)} --> {srt_timestamp(en)}")
+        lines.append(str(i))
+        lines.append("")  # blank line
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -332,6 +354,7 @@ def write_txt_sentences(
     if main_speaker is None and not tag_all_speakers:
         main_speaker = compute_main_speaker(sentence_items)
     lines = [format_sentence_line(item, main_speaker, tag_all_speakers) for item in sentence_items]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
@@ -406,19 +429,28 @@ def combine_dir_to_txt(in_dir: Path, out_txt: Path) -> int:
     return len(all_sentences)
 
 
-def build_srt_for_dir(in_dir: Path) -> int:
+def build_srt_for_dir(
+    in_dir: Path,
+    out_srt_dir: Path,
+    out_txt_dir: Path,
+    write_sentence_copy: bool = False,
+) -> int:
     # Build SRT (and TXT) for every JSON file in a folder.
     json_files = sorted([p for p in in_dir.iterdir() if p.is_file() and p.suffix.lower() == ".json"])
+    out_srt_dir.mkdir(parents=True, exist_ok=True)
+    out_txt_dir.mkdir(parents=True, exist_ok=True)
     total_cues = 0
     for p in json_files:
         payload = json.loads(p.read_text(encoding="utf-8"))
-        out_srt = p.with_suffix(".srt")
-        out_txt = p.with_suffix(".txt")
+        out_srt = out_srt_dir / f"{p.stem}.srt"
+        out_txt = out_txt_dir / f"{p.stem}.txt"
 
         words = payload.get("words", [])
         tokens = build_tokens(words)
         cues = tokens_to_cues(tokens)
         write_srt(cues, out_srt)
+        if write_sentence_copy:
+            write_sentence_srt(cues, sentence_srt_path(out_srt))
         total_cues += len(cues)
 
         sentences = build_sentences_from_payload(payload)
@@ -435,9 +467,12 @@ def main():
     parser = argparse.ArgumentParser(description="Convert ElevenLabs JSON to SRT and/or combined TXT.")
     parser.add_argument("--input", type=Path, default=IN_JSON, help="Input JSON file.")
     parser.add_argument("--out-srt", type=Path, default=OUT_SRT, help="Output SRT file.")
-    parser.add_argument("--out-txt", type=Path, default=BASE_DIR / "combined.txt", help="Output TXT file.")
+    parser.add_argument("--out-txt", type=Path, default=TXT_DIR / "combined.txt", help="Output TXT file.")
     parser.add_argument("--combine-dir", type=Path, default=None, help="Directory with JSON files to combine.")
     parser.add_argument("--srt-dir", type=Path, default=None, help="Directory with JSON files to convert to per-file SRT/TXT.")
+    parser.add_argument("--srt-out-dir", type=Path, default=SRT_DIR, help="Output directory for SRT files from --srt-dir.")
+    parser.add_argument("--txt-out-dir", type=Path, default=TXT_DIR, help="Output directory for TXT files from --srt-dir.")
+    parser.add_argument("--sentence-srt", action="store_true", help="Write a copy of each SRT with only cue numbers as visible text.")
     parser.add_argument("--no-srt", action="store_true", help="Skip SRT generation for --input.")
     parser.add_argument("--only-combine", action="store_true", help="Only build combined TXT from --combine-dir.")
     args = parser.parse_args()
@@ -446,8 +481,13 @@ def main():
         raise SystemExit("--only-combine requires --combine-dir")
 
     if args.srt_dir:
-        count = build_srt_for_dir(args.srt_dir)
-        print(f"Wrote: {args.srt_dir} ({count} subtitles across JSON files)")
+        count = build_srt_for_dir(
+            args.srt_dir,
+            out_srt_dir=args.srt_out_dir,
+            out_txt_dir=args.txt_out_dir,
+            write_sentence_copy=args.sentence_srt,
+        )
+        print(f"Wrote SRT to {args.srt_out_dir} and TXT to {args.txt_out_dir} ({count} subtitles across JSON files)")
         return
 
     if args.combine_dir:
@@ -464,6 +504,10 @@ def main():
         cues = tokens_to_cues(tokens)
         write_srt(cues, args.out_srt)
         print(f"Wrote: {args.out_srt} ({len(cues)} subtitles)")
+        if args.sentence_srt:
+            out_sentence_srt = sentence_srt_path(args.out_srt)
+            write_sentence_srt(cues, out_sentence_srt)
+            print(f"Wrote: {out_sentence_srt} ({len(cues)} numbered subtitles)")
 
     sentences = build_sentences_from_payload(payload)
     if sentences:

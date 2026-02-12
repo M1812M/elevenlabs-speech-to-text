@@ -1,3 +1,5 @@
+import argparse
+import base64
 import os
 import sys
 import json
@@ -13,8 +15,11 @@ from tqdm import tqdm
 # CONFIG
 # =========================
 BASE_DIR = Path(__file__).resolve().parent
-IN_DIR = BASE_DIR / "transcribe"
-OUT_DIR = BASE_DIR / "transcript"
+MEDIA_DIR = BASE_DIR / "media"
+IN_DIR = MEDIA_DIR / "REC"
+JSON_DIR = MEDIA_DIR / "JSON"
+SRT_DIR = MEDIA_DIR / "SRT"
+TXT_DIR = MEDIA_DIR / "TXT"
 
 LANGUAGE_CODE = "uzb"
 MODEL_ID = "scribe_v2"
@@ -25,8 +30,15 @@ OVERWRITE = False             # True: re-generate even if output exists
 PER_FILE_PROGRESS = True
 
 # Combine all transcripts into one TXT (one sentence per line)
-COMBINE_TXT = True
+COMBINE_TXT = False
 COMBINED_TXT_NAME = "combined.txt"
+
+# CLI defaults for STT API options
+DEFAULT_TIMESTAMPS_GRANULARITY = "word"
+DEFAULT_ADDITIONAL_FORMATS = ["srt", "txt"]
+DEFAULT_INCLUDE_SPEAKERS = True
+DEFAULT_INCLUDE_TIMESTAMPS = True
+SUPPORTED_ADDITIONAL_FORMATS = {"docx", "html", "pdf", "segmented_json", "srt", "txt"}
 
 # Extensions we will accept in the input folder
 ALLOWED_EXTS = {
@@ -309,6 +321,114 @@ def combine_dir_to_txt(out_dir: Path, ordered_stems, out_path: Path):
     write_sentences_txt(all_sentences, out_path, tag_all_speakers=True)
     return len(all_sentences)
 
+
+def normalize_additional_formats(raw_values: List[str]) -> List[str]:
+    # Accept both spaced and comma-separated input, remove duplicates, keep order.
+    normalized: List[str] = []
+    seen = set()
+    for raw in raw_values:
+        for part in str(raw).split(","):
+            fmt = part.strip().lower()
+            if not fmt or fmt in seen:
+                continue
+            normalized.append(fmt)
+            seen.add(fmt)
+    return normalized
+
+
+def parse_args():
+    # Parse optional CLI flags for transcription output controls.
+    parser = argparse.ArgumentParser(description="Batch transcription with ElevenLabs.")
+    parser.add_argument(
+        "--timestamps-granularity",
+        choices=["none", "word", "character"],
+        default=DEFAULT_TIMESTAMPS_GRANULARITY,
+        help="Timestamp detail level in API response.",
+    )
+    parser.add_argument(
+        "--additional-formats",
+        nargs="*",
+        default=list(DEFAULT_ADDITIONAL_FORMATS),
+        metavar="FORMAT",
+        help="Additional API export formats, e.g. srt txt segmented_json pdf docx html.",
+    )
+    parser.add_argument(
+        "--include-speakers",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_INCLUDE_SPEAKERS,
+        help="Include speaker labels in API additional formats.",
+    )
+    parser.add_argument(
+        "--include-timestamps",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_INCLUDE_TIMESTAMPS,
+        help="Include timestamps in API additional formats.",
+    )
+
+    args = parser.parse_args()
+    args.additional_formats = normalize_additional_formats(args.additional_formats)
+    invalid_formats = [fmt for fmt in args.additional_formats if fmt not in SUPPORTED_ADDITIONAL_FORMATS]
+    if invalid_formats:
+        parser.error(
+            f"Unsupported additional format(s): {invalid_formats}. "
+            f"Supported: {sorted(SUPPORTED_ADDITIONAL_FORMATS)}"
+        )
+    return args
+
+
+def build_additional_format_options(formats: List[str], include_speakers: bool, include_timestamps: bool):
+    # Build API export options from CLI preferences.
+    options = []
+    for fmt in formats:
+        options.append(
+            {
+                "format": fmt,
+                "include_speakers": include_speakers,
+                "include_timestamps": include_timestamps,
+            }
+        )
+    return options
+
+
+def write_api_additional_formats(
+    payload,
+    stem: str,
+    json_dir: Path,
+    srt_dir: Path,
+    txt_dir: Path,
+):
+    # Write API-returned additional formats to files and return written file map.
+    written = {}
+    for item in payload.get("additional_formats") or []:
+        requested_format = str(item.get("requested_format") or "").strip().lower()
+        file_extension = str(item.get("file_extension") or "").strip().lower().lstrip(".")
+        ext = file_extension or requested_format
+        content = item.get("content")
+        if not ext or content is None:
+            continue
+
+        if requested_format == "srt" or ext == "srt":
+            out_path = srt_dir / f"{stem}.srt"
+        elif requested_format == "txt" or ext == "txt":
+            out_path = txt_dir / f"{stem}.txt"
+        elif requested_format == "segmented_json":
+            out_path = json_dir / f"{stem}.segmented.json"
+        elif ext == "json" and requested_format and requested_format != "json":
+            out_path = json_dir / f"{stem}.{requested_format}.json"
+        else:
+            out_path = json_dir / f"{stem}.{ext}"
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if item.get("is_base64_encoded"):
+            out_path.write_bytes(base64.b64decode(content))
+        else:
+            out_path.write_text(str(content), encoding="utf-8")
+
+        written[ext] = out_path
+        if requested_format:
+            written[requested_format] = out_path
+    return written
+
 # =========================
 # ENV KEY LOADING (same approach you used)
 # =========================
@@ -386,12 +506,15 @@ class TqdmFileWrapper:
 
 def main():
     # CLI entry point for batch transcription.
+    args = parse_args()
     api_key = load_api_key()
 
     if not IN_DIR.exists():
         raise FileNotFoundError(f"Input folder not found: {IN_DIR}")
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    SRT_DIR.mkdir(parents=True, exist_ok=True)
+    TXT_DIR.mkdir(parents=True, exist_ok=True)
 
     client = ElevenLabs(api_key=api_key)
 
@@ -404,14 +527,27 @@ def main():
 
     print(f"Python: {sys.executable}")
     print(f"Found {len(audio_files)} audio files in: {IN_DIR}")
+    print(
+        "STT options: "
+        f"timestamps_granularity={args.timestamps_granularity}, "
+        f"additional_formats={args.additional_formats or []}, "
+        f"include_speakers={args.include_speakers}, "
+        f"include_timestamps={args.include_timestamps}"
+    )
+
+    additional_format_options = build_additional_format_options(
+        args.additional_formats,
+        args.include_speakers,
+        args.include_timestamps,
+    )
 
     for idx, audio_path in enumerate(tqdm(audio_files, desc="Transcribing files", unit="file"), start=1):
         stem = audio_path.stem
-        out_json = OUT_DIR / f"{stem}.json"
-        out_srt = OUT_DIR / f"{stem}.srt"
-        out_txt = OUT_DIR / f"{stem}.txt"
+        out_json = JSON_DIR / f"{stem}.json"
+        out_srt = SRT_DIR / f"{stem}.srt"
+        out_txt = TXT_DIR / f"{stem}.txt"
 
-        if not OVERWRITE and out_json.exists() and out_srt.exists():
+        if not OVERWRITE and out_json.exists() and out_srt.exists() and out_txt.exists():
             tqdm.write(f"[{idx}/{len(audio_files)}] SKIP (exists): {audio_path.name}")
             continue
 
@@ -420,25 +556,23 @@ def main():
 
         try:
             filesize = audio_path.stat().st_size
+            convert_kwargs = {
+                "model_id": MODEL_ID,
+                "diarize": True,
+                "tag_audio_events": True,
+                "language_code": LANGUAGE_CODE,
+                "timestamps_granularity": args.timestamps_granularity,
+            }
+            if additional_format_options:
+                convert_kwargs["additional_formats"] = additional_format_options
+
             if PER_FILE_PROGRESS:
                 with open(audio_path, "rb") as f, tqdm(total=filesize, unit="B", unit_scale=True, desc=audio_path.name, leave=False) as fb:
                     wrapped = TqdmFileWrapper(f, fb)
-                    result = client.speech_to_text.convert(
-                        file=wrapped,
-                        model_id=MODEL_ID,
-                        diarize=True,
-                        tag_audio_events=True,
-                        language_code=LANGUAGE_CODE,
-                    )
+                    result = client.speech_to_text.convert(file=wrapped, **convert_kwargs)
             else:
                 with open(audio_path, "rb") as f:
-                    result = client.speech_to_text.convert(
-                        file=f,
-                        model_id=MODEL_ID,
-                        diarize=True,
-                        tag_audio_events=True,
-                        language_code=LANGUAGE_CODE,
-                    )
+                    result = client.speech_to_text.convert(file=f, **convert_kwargs)
 
             payload = to_payload(result)
 
@@ -446,24 +580,41 @@ def main():
             with open(out_json, "w", encoding="utf-8") as out:
                 json.dump(payload, out, ensure_ascii=False, indent=2)
 
-            # Build SRT (expects payload["words"])
-            words = payload.get("words") or [
-                {"type":"word","start":s["start"], "end":s["end"], "text": s["text"]}
-                for s in payload.get("segments", [])
-            ]
-            srt_text = words_to_srt(words)
+            api_written_formats = write_api_additional_formats(
+                payload,
+                stem,
+                JSON_DIR,
+                SRT_DIR,
+                TXT_DIR,
+            )
 
-            with open(out_srt, "w", encoding="utf-8") as out:
-                out.write(srt_text)
+            if "srt" not in api_written_formats:
+                # Build local SRT fallback (expects payload["words"])
+                words = payload.get("words") or [
+                    {"type":"word","start":s["start"], "end":s["end"], "text": s["text"]}
+                    for s in payload.get("segments", [])
+                ]
+                srt_text = words_to_srt(words)
+                with open(out_srt, "w", encoding="utf-8") as out:
+                    out.write(srt_text)
 
-            # Write per-file TXT with speaker labels
-            sentence_items = payload_to_sentence_items(payload)
-            if sentence_items:
-                remap = build_speaker_remap(payload.get("words") or [])
-                sentence_items = remap_sentence_items(sentence_items, remap)
-                write_sentences_txt(sentence_items, out_txt, tag_all_speakers=True)
+            if "txt" not in api_written_formats:
+                # Write local TXT fallback with speaker labels
+                sentence_items = payload_to_sentence_items(payload)
+                if sentence_items:
+                    remap = build_speaker_remap(payload.get("words") or [])
+                    sentence_items = remap_sentence_items(sentence_items, remap)
+                    write_sentences_txt(sentence_items, out_txt, tag_all_speakers=True)
 
-            tqdm.write(f"    OK -> {out_json.name}, {out_srt.name}, {out_txt.name}")
+            written_files = [out_json.name]
+            if out_srt.exists():
+                written_files.append(out_srt.name)
+            if out_txt.exists():
+                written_files.append(out_txt.name)
+            for fmt, path in api_written_formats.items():
+                if fmt in SUPPORTED_ADDITIONAL_FORMATS and path.name not in written_files:
+                    written_files.append(path.name)
+            tqdm.write(f"    OK -> {', '.join(written_files)}")
 
         except Exception as e:
             tqdm.write(f"    ERROR on {audio_path.name}: {type(e).__name__}: {e}")
@@ -472,8 +623,8 @@ def main():
 
     if COMBINE_TXT:
         ordered_stems = [p.stem for p in audio_files]
-        out_txt = OUT_DIR / COMBINED_TXT_NAME
-        count = combine_dir_to_txt(OUT_DIR, ordered_stems, out_txt)
+        out_txt = TXT_DIR / COMBINED_TXT_NAME
+        count = combine_dir_to_txt(JSON_DIR, ordered_stems, out_txt)
         print(f"Wrote: {out_txt} ({count} sentences)")
 
     print("Done.")
