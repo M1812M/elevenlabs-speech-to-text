@@ -1,4 +1,6 @@
 desktop.ini
-_tmp
-transcript/*
-transcribe/*
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+media/*

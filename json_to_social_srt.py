@@ -1,7 +1,16 @@
-﻿import json
+import argparse
+import json
 import re
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+
+from elevenlabs_toolkit.paths import JSON_DIR, SOCIAL_SRT_DIR
+from elevenlabs_toolkit.timecode import srt_timestamp
+
+
+class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
+    pass
+
 
 # =========================
 # TUNING (Social Defaults)
@@ -15,20 +24,15 @@ MIN_DURATION = 0.9          # seconds
 GAP_SPLIT = 0.75            # split if silence gap bigger than this (seconds)
 
 # Hard boundaries
-HARD_END_RE = re.compile(r"[.!?\u2026]+$")       # always end cue
+HARD_END_RE = re.compile(r"[.!?\u2026]+$")  # always end cue
 # Soft boundaries (prefer ending here if cue is "long enough")
 SOFT_END_RE = re.compile(r"[,;:]+$")
 
 # Optional: only keep one speaker (set to None to keep all)
 ONLY_SPEAKER_ID = None  # e.g. 0
 
-BASE_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BASE_DIR / "media"
-JSON_DIR = MEDIA_DIR / "JSON"
-SOCIAL_SRT_DIR = MEDIA_DIR / "SRT-social"
-
 UZ_APOS = "\u2018"
-APOS_RE = re.compile(r"[\u02bb\u02bc\u2018\u2019`´']")
+APOS_RE = re.compile(r"[\u02bb\u02bc\u2018\u2019`\u00b4']")
 CYRILLIC_LETTER_RE = re.compile(r"[\u0400-\u04FF]")
 CYRILLIC_VOWELS_AND_SIGNS = set(
     "\u0410\u0430\u0415\u0435\u0401\u0451\u0418\u0438\u041e\u043e\u0423\u0443"
@@ -48,42 +52,114 @@ LATIN_DIGRAPHS_TO_CYRILLIC = [
 ]
 
 LATIN_TO_CYRILLIC_CHARS = {
-    "a": "\u0430", "b": "\u0431", "c": "\u0446", "d": "\u0434", "e": "\u0435", "f": "\u0444", "g": "\u0433",
-    "h": "\u04b3", "i": "\u0438", "j": "\u0436", "k": "\u043a", "l": "\u043b", "m": "\u043c", "n": "\u043d",
-    "o": "\u043e", "p": "\u043f", "q": "\u049b", "r": "\u0440", "s": "\u0441", "t": "\u0442", "u": "\u0443",
-    "v": "\u0432", "w": "\u0432", "x": "\u0445", "y": "\u0439", "z": "\u0437",
+    "a": "\u0430",
+    "b": "\u0431",
+    "c": "\u0446",
+    "d": "\u0434",
+    "e": "\u0435",
+    "f": "\u0444",
+    "g": "\u0433",
+    "h": "\u04b3",
+    "i": "\u0438",
+    "j": "\u0436",
+    "k": "\u043a",
+    "l": "\u043b",
+    "m": "\u043c",
+    "n": "\u043d",
+    "o": "\u043e",
+    "p": "\u043f",
+    "q": "\u049b",
+    "r": "\u0440",
+    "s": "\u0441",
+    "t": "\u0442",
+    "u": "\u0443",
+    "v": "\u0432",
+    "w": "\u0432",
+    "x": "\u0445",
+    "y": "\u0439",
+    "z": "\u0437",
 }
 
 CYRILLIC_TO_LATIN_CHARS = {
-    "\u0410": "A", "\u0430": "a", "\u0411": "B", "\u0431": "b", "\u0412": "V", "\u0432": "v",
-    "\u0413": "G", "\u0433": "g", "\u0492": f"G{UZ_APOS}", "\u0493": f"g{UZ_APOS}", "\u0414": "D", "\u0434": "d",
-    "\u0401": "Yo", "\u0451": "yo", "\u0416": "J", "\u0436": "j", "\u0417": "Z", "\u0437": "z",
-    "\u0418": "I", "\u0438": "i", "\u0419": "Y", "\u0439": "y", "\u041a": "K", "\u043a": "k",
-    "\u049a": "Q", "\u049b": "q", "\u041b": "L", "\u043b": "l", "\u041c": "M", "\u043c": "m",
-    "\u041d": "N", "\u043d": "n", "\u041e": "O", "\u043e": "o", "\u041f": "P", "\u043f": "p",
-    "\u0420": "R", "\u0440": "r", "\u0421": "S", "\u0441": "s", "\u0422": "T", "\u0442": "t",
-    "\u0423": "U", "\u0443": "u", "\u0424": "F", "\u0444": "f", "\u0425": "X", "\u0445": "x",
-    "\u04b2": "H", "\u04b3": "h", "\u0426": "S", "\u0446": "s", "\u0427": "Ch", "\u0447": "ch",
-    "\u0428": "Sh", "\u0448": "sh", "\u0429": "Sh", "\u0449": "sh", "\u042a": "'", "\u044a": "'",
-    "\u042c": "'", "\u044c": "'", "\u042d": "E", "\u044d": "e", "\u042e": "Yu", "\u044e": "yu",
-    "\u042f": "Ya", "\u044f": "ya", "\u040e": f"O{UZ_APOS}", "\u045e": f"o{UZ_APOS}",
+    "\u0410": "A",
+    "\u0430": "a",
+    "\u0411": "B",
+    "\u0431": "b",
+    "\u0412": "V",
+    "\u0432": "v",
+    "\u0413": "G",
+    "\u0433": "g",
+    "\u0492": f"G{UZ_APOS}",
+    "\u0493": f"g{UZ_APOS}",
+    "\u0414": "D",
+    "\u0434": "d",
+    "\u0401": "Yo",
+    "\u0451": "yo",
+    "\u0416": "J",
+    "\u0436": "j",
+    "\u0417": "Z",
+    "\u0437": "z",
+    "\u0418": "I",
+    "\u0438": "i",
+    "\u0419": "Y",
+    "\u0439": "y",
+    "\u041a": "K",
+    "\u043a": "k",
+    "\u049a": "Q",
+    "\u049b": "q",
+    "\u041b": "L",
+    "\u043b": "l",
+    "\u041c": "M",
+    "\u043c": "m",
+    "\u041d": "N",
+    "\u043d": "n",
+    "\u041e": "O",
+    "\u043e": "o",
+    "\u041f": "P",
+    "\u043f": "p",
+    "\u0420": "R",
+    "\u0440": "r",
+    "\u0421": "S",
+    "\u0441": "s",
+    "\u0422": "T",
+    "\u0442": "t",
+    "\u0423": "U",
+    "\u0443": "u",
+    "\u0424": "F",
+    "\u0444": "f",
+    "\u0425": "X",
+    "\u0445": "x",
+    "\u04b2": "H",
+    "\u04b3": "h",
+    "\u0426": "S",
+    "\u0446": "s",
+    "\u0427": "Ch",
+    "\u0447": "ch",
+    "\u0428": "Sh",
+    "\u0448": "sh",
+    "\u0429": "Sh",
+    "\u0449": "sh",
+    "\u042a": "'",
+    "\u044a": "'",
+    "\u042c": "'",
+    "\u044c": "'",
+    "\u042d": "E",
+    "\u044d": "e",
+    "\u042e": "Yu",
+    "\u044e": "yu",
+    "\u042f": "Ya",
+    "\u044f": "ya",
+    "\u040e": f"O{UZ_APOS}",
+    "\u045e": f"o{UZ_APOS}",
 }
 
-
-def srt_timestamp(t: float) -> str:
-    ms = int(round(max(t, 0.0) * 1000))
-    hh = ms // 3_600_000
-    ms %= 3_600_000
-    mm = ms // 60_000
-    ms %= 60_000
-    ss = ms // 1000
-    ms %= 1000
-    return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
+TIMECODE_RE = re.compile(r"^\s*\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3}\s*$")
+HTML_TAG_RE = re.compile(r"(<[^>]+>)")
 
 
 def normalize(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"\s+([,.;:!?\u2026])", r"\1", text)  # no space before punctuation
+    text = re.sub(r"\s+([,.;:!?\u2026])", r"\1", text)
     return text
 
 
@@ -102,7 +178,6 @@ def is_cyrillic_letter(ch: Optional[str]) -> bool:
 
 
 def to_cyrillic(text: str) -> str:
-    # Transliterate Uzbek Latin text to Cyrillic (non-matching chars pass through).
     value = APOS_RE.sub("'", text)
     for pattern, replacement in LATIN_DIGRAPHS_TO_CYRILLIC:
         value = pattern.sub(lambda m: apply_case(m.group(0), replacement), value)
@@ -118,7 +193,6 @@ def to_cyrillic(text: str) -> str:
                 out_chars.append(ch)
             continue
 
-        # Match uzlatin.com: word-initial 'e' maps to 'э', otherwise 'е'.
         if lower == "e":
             prev = value[idx - 1] if idx > 0 else None
             if prev is None or not prev.isalpha():
@@ -130,10 +204,8 @@ def to_cyrillic(text: str) -> str:
 
 
 def to_latin(text: str) -> str:
-    # Transliterate Uzbek Cyrillic text to Latin (non-matching chars pass through).
     out_parts: List[str] = []
     for idx, ch in enumerate(text):
-        # Match uzlatin.com: 'Е/е' -> 'Ye/ye' at word start or after vowels/signs.
         if ch in ("\u0415", "\u0435"):
             prev = text[idx - 1] if idx > 0 else None
             if not is_cyrillic_letter(prev) or (prev in CYRILLIC_VOWELS_AND_SIGNS):
@@ -149,25 +221,20 @@ def to_latin(text: str) -> str:
 
 def build_word_tokens(payload: Dict) -> List[Dict]:
     out = []
-    for w in payload.get("words", []):
-        if w.get("type") != "word":
+    for word in payload.get("words", []):
+        if word.get("type") != "word":
             continue
-        if ONLY_SPEAKER_ID is not None and w.get("speaker_id") != ONLY_SPEAKER_ID:
+        if ONLY_SPEAKER_ID is not None and word.get("speaker_id") != ONLY_SPEAKER_ID:
             continue
-        txt = w.get("text", "")
+        txt = word.get("text", "")
         if not txt:
             continue
-        out.append({
-            "text": txt,
-            "start": float(w.get("start", 0.0)),
-            "end": float(w.get("end", 0.0)),
-        })
+        out.append({"text": txt, "start": float(word.get("start", 0.0)), "end": float(word.get("end", 0.0))})
     return out
 
 
 def tokens_to_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
     cues: List[Tuple[float, float, str]] = []
-
     cur_start: Optional[float] = None
     cur_end: Optional[float] = None
     cur_parts: List[str] = []
@@ -193,18 +260,15 @@ def tokens_to_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
         if cur_start is None:
             cur_start = st
 
-        # hard split on silence gap
         if last_end is not None and (st - last_end) > GAP_SPLIT and cur_parts:
             flush()
             cur_start = st
 
-        # add token tentatively
         tentative_parts = cur_parts + [txt]
         tentative_text = normalize(" ".join(tentative_parts))
         tentative_words = cur_words + 1
         tentative_dur = en - cur_start
 
-        # 1) HARD stop at sentence end punctuation (after adding)
         if HARD_END_RE.search(tentative_text):
             cur_parts = tentative_parts
             cur_words = tentative_words
@@ -213,14 +277,12 @@ def tokens_to_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
             last_end = en
             continue
 
-        # 2) Enforce hard limits: chars/words/duration
         hard_limit_hit = (
-            len(tentative_text) > MAX_CHARS or
-            tentative_words > MAX_WORDS or
-            tentative_dur > MAX_DURATION
+            len(tentative_text) > MAX_CHARS
+            or tentative_words > MAX_WORDS
+            or tentative_dur > MAX_DURATION
         )
         if hard_limit_hit and cur_parts:
-            # flush current cue BEFORE adding this token
             flush()
             cur_start = st
             cur_parts = [txt]
@@ -229,7 +291,6 @@ def tokens_to_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
             last_end = en
             continue
 
-        # 3) SOFT split: prefer comma/semicolon/colon if cue is long enough
         if SOFT_END_RE.search(tentative_text):
             if (len(tentative_text) >= 20) or (tentative_words >= 5) or (tentative_dur >= MIN_DURATION):
                 cur_parts = tentative_parts
@@ -239,7 +300,6 @@ def tokens_to_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
                 last_end = en
                 continue
 
-        # 4) Otherwise just keep building
         cur_parts = tentative_parts
         cur_words = tentative_words
         cur_end = en
@@ -247,15 +307,14 @@ def tokens_to_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
 
     flush()
 
-    # Merge too-short cues forward when possible (keeps readability)
     merged: List[Tuple[float, float, str]] = []
     for st, en, tx in cues:
         if merged:
-            pst, pen, ptx = merged[-1]
+            prev_start, prev_end, prev_text = merged[-1]
             if (en - st) < MIN_DURATION:
-                candidate = normalize(ptx + " " + tx)
-                if len(candidate) <= MAX_CHARS and (en - pst) <= MAX_DURATION:
-                    merged[-1] = (pst, en, candidate)
+                candidate = normalize(prev_text + " " + tx)
+                if len(candidate) <= MAX_CHARS and (en - prev_start) <= MAX_DURATION:
+                    merged[-1] = (prev_start, en, candidate)
                     continue
         merged.append((st, en, tx))
 
@@ -284,8 +343,118 @@ def convert_one(json_path: Path, cyrillic_srt_path: Path, latin_srt_path: Path) 
     return len(cues)
 
 
+def is_srt_meta_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped.isdigit():
+        return True
+    if TIMECODE_RE.match(stripped):
+        return True
+    return False
+
+
+def latin_srt_to_cyrillic_text(srt_text: str) -> str:
+    def to_cyrillic_preserving_html_tags(line: str) -> str:
+        parts = HTML_TAG_RE.split(line)
+        transformed_parts = [
+            part if HTML_TAG_RE.fullmatch(part) else to_cyrillic(part)
+            for part in parts
+        ]
+        return "".join(transformed_parts)
+
+    out_lines: List[str] = []
+    for line in srt_text.splitlines():
+        if is_srt_meta_line(line):
+            out_lines.append(line)
+        else:
+            out_lines.append(to_cyrillic_preserving_html_tags(line))
+    return "\n".join(out_lines) + ("\n" if srt_text.endswith(("\n", "\r")) else "")
+
+
+def cyrillic_output_path_for_latin(latin_srt_path: Path) -> Path:
+    name = latin_srt_path.name
+    if name.endswith("_latin.srt"):
+        return latin_srt_path.with_name(name[:-10] + "_cyrillic.srt")
+    if name.endswith(".srt"):
+        return latin_srt_path.with_name(name[:-4] + "_cyrillic.srt")
+    return latin_srt_path.with_name(name + "_cyrillic.srt")
+
+
+def convert_latin_srt_file_to_cyrillic(latin_srt_path: Path, out_path: Optional[Path] = None) -> Path:
+    target = out_path or cyrillic_output_path_for_latin(latin_srt_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_text = latin_srt_path.read_text(encoding="utf-8")
+    target.write_text(latin_srt_to_cyrillic_text(source_text), encoding="utf-8")
+    return target
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Social subtitle helper.\n"
+            "Mode 1: Build *_social_latin.srt and *_social_cyrillic.srt from media/JSON.\n"
+            "Mode 2: Convert edited Latin SRT files to Cyrillic while preserving cue timing."
+        ),
+        formatter_class=HelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python json_to_social_srt.py\n"
+            "  python json_to_social_srt.py --mode latin-srt-to-cyrillic\n"
+            "  python json_to_social_srt.py --latin-srt \"media/SRT-social/myfile_social_latin.srt\"\n"
+            "  python json_to_social_srt.py --latin-srt-dir media/SRT-social --latin-srt-glob \"*_latin.srt\""
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["from-json", "latin-srt-to-cyrillic"],
+        default="from-json",
+        help="Explicit operation mode.",
+    )
+    parser.add_argument(
+        "--latin-srt",
+        type=Path,
+        default=None,
+        help="Single Latin SRT file to convert. If provided, SRT conversion mode is used automatically.",
+    )
+    parser.add_argument(
+        "--latin-srt-dir",
+        type=Path,
+        default=SOCIAL_SRT_DIR,
+        help="Directory containing Latin SRT files for batch conversion.",
+    )
+    parser.add_argument(
+        "--latin-srt-glob",
+        type=str,
+        default="*_latin.srt",
+        help="Glob pattern used with --latin-srt-dir.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    # Convert all JSON files in media/JSON to social-style SRT in media/SRT-social.
+    args = parse_args()
+
+    # If a specific SRT is provided, prioritize SRT conversion mode.
+    run_srt_conversion = (args.mode == "latin-srt-to-cyrillic") or (args.latin_srt is not None)
+    if run_srt_conversion:
+        if args.latin_srt:
+            if not args.latin_srt.exists():
+                print(f"Latin SRT not found: {args.latin_srt}")
+                return
+            out_path = convert_latin_srt_file_to_cyrillic(args.latin_srt)
+            print(f"Wrote {out_path.name} from {args.latin_srt.name}")
+            return
+
+        latin_files = sorted(args.latin_srt_dir.glob(args.latin_srt_glob))
+        if not latin_files:
+            print(f"No Latin SRT files found in {args.latin_srt_dir} matching {args.latin_srt_glob}")
+            return
+        for latin_file in latin_files:
+            out_path = convert_latin_srt_file_to_cyrillic(latin_file)
+            print(f"Wrote {out_path.name} from {latin_file.name}")
+        return
+
     json_files = sorted(JSON_DIR.glob("*.json"))
     if not json_files:
         print(f"No JSON files found in {JSON_DIR}")
@@ -296,8 +465,8 @@ def main() -> None:
     for in_json in json_files:
         out_cyr = SOCIAL_SRT_DIR / f"{in_json.stem}_social_cyrillic.srt"
         out_lat = SOCIAL_SRT_DIR / f"{in_json.stem}_social_latin.srt"
-        n = convert_one(in_json, out_cyr, out_lat)
-        print(f"Wrote {out_cyr.name} and {out_lat.name} from {in_json.name} ({n} cues)")
+        n_cues = convert_one(in_json, out_cyr, out_lat)
+        print(f"Wrote {out_cyr.name} and {out_lat.name} from {in_json.name} ({n_cues} cues)")
 
 
 if __name__ == "__main__":
