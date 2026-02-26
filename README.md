@@ -42,7 +42,13 @@ Install packages:
 pip install elevenlabs tqdm python-dotenv
 ```
 
-Create `.env` in project root:
+Create local config from template:
+
+```powershell
+Copy-Item .\.env.example .\.env
+```
+
+Then set your key in `.env`:
 
 ```env
 ELEVENLABS_API_KEY=your_key_here
