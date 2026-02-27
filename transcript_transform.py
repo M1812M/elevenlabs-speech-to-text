@@ -165,6 +165,7 @@ CYRILLIC_TO_LATIN_CHARS = {
 
 TIMECODE_RE = re.compile(r"^\s*\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3}\s*$")
 HTML_TAG_RE = re.compile(r"(<[^>]+>)")
+REGEX_META_RE = re.compile(r"[.^$*+?{}\[\]|()]")
 
 
 def wrap_two_lines(text: str, max_chars_per_line: int = MAX_CHARS_PER_LINE) -> str:
@@ -311,7 +312,23 @@ def tokens_to_standard_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]
                     continue
         merged.append((st, en, tx))
 
-    return merged
+    # Prevent one-word orphan cues by borrowing one trailing word from the previous cue.
+    rebalanced: List[Tuple[float, float, str]] = []
+    for st, en, tx in merged:
+        if rebalanced and len(tx.split()) == 1:
+            prev_start, prev_end, prev_text = rebalanced[-1]
+            prev_words = prev_text.split()
+            if len(prev_words) >= 3:
+                moved = prev_words.pop()
+                new_prev = normalize_spaces(" ".join(prev_words))
+                new_cur = normalize_spaces(f"{moved} {tx}")
+                if new_prev and len(new_prev) <= MAX_CHARS and len(new_cur) <= MAX_CHARS:
+                    rebalanced[-1] = (prev_start, prev_end, new_prev)
+                    rebalanced.append((st, en, new_cur))
+                    continue
+        rebalanced.append((st, en, tx))
+
+    return rebalanced
 
 
 def write_srt(cues: List[Tuple[float, float, str]], out_path: Path) -> None:
@@ -557,9 +574,32 @@ def ensure_dir(path: Path, arg_name: str) -> Path:
     return path
 
 
+def collect_regex_matches(path_expression: Path, suffix: str, label: str) -> List[Path]:
+    parent = path_expression.parent
+    pattern = path_expression.name
+
+    if not parent.exists() or not parent.is_dir():
+        raise FileNotFoundError(f"{label} path not found: {path_expression}")
+    if not REGEX_META_RE.search(pattern):
+        raise FileNotFoundError(f"{label} path not found: {path_expression}")
+
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid regex in --path expression '{pattern}': {exc}") from exc
+
+    matches = sorted(
+        p for p in parent.iterdir()
+        if p.is_file() and p.suffix.lower() == suffix and regex.search(p.name)
+    )
+    if not matches:
+        raise FileNotFoundError(f"No {label} files matched regex '{pattern}' in {parent}")
+    return matches
+
+
 def collect_json_sources(path: Path, glob_pattern: str) -> List[Path]:
     if not path.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
+        return collect_regex_matches(path, ".json", "JSON")
 
     if path.is_file():
         if path.suffix.lower() != ".json":
@@ -574,7 +614,7 @@ def collect_json_sources(path: Path, glob_pattern: str) -> List[Path]:
 
 def collect_latin_srt_sources(path: Path, glob_pattern: str) -> List[Path]:
     if not path.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
+        return collect_regex_matches(path, ".srt", "Latin SRT")
 
     if path.is_file():
         if path.suffix.lower() != ".srt":
@@ -614,10 +654,19 @@ def parse_args() -> Optional[argparse.Namespace]:
             "  python transcript_transform.py --path media/JSON --create-srt --create-txt\n"
             "  python transcript_transform.py --path media/JSON --create-txt-combined\n"
             "  python transcript_transform.py --path media/JSON --create-social-srt-latin --create-social-srt-cyrillic\n"
-            "  python transcript_transform.py --path media/SRT-social --convert-latin-srt-to-cyrillic"
+            "  python transcript_transform.py --path media/SRT-social --convert-latin-srt-to-cyrillic\n"
+            "  python transcript_transform.py --path \"media/JSON/^2025-06.*Shock[.]json$\" --create-srt"
         ),
     )
-    parser.add_argument("--path", type=Path, default=None, help="Input file or directory.")
+    parser.add_argument(
+        "--path",
+        type=Path,
+        default=None,
+        help=(
+            "Input file, directory, or path expression. "
+            "If the exact path does not exist but its parent directory exists, the last segment is treated as regex."
+        ),
+    )
     parser.add_argument("--json-glob", type=str, default="*.json", help="Glob for JSON files when --path is a directory.")
     parser.add_argument(
         "--latin-srt-glob",
@@ -766,7 +815,7 @@ def main() -> None:
             if sentences:
                 remap = build_speaker_remap(payload.get("words") or [])
                 sentences = remap_sentence_items(sentences, remap)
-                write_sentences_txt(sentences, out_txt, tag_all_speakers=True)
+                write_sentences_txt(sentences, out_txt, main_speaker="", tag_all_speakers=False)
                 total_sentences += len(sentences)
                 print(f"Wrote {out_txt}")
 
@@ -789,7 +838,7 @@ def main() -> None:
             sentences = remap_sentence_items(sentences, remap)
             combined_sentences.extend(sentences)
 
-        write_sentences_txt(combined_sentences, combined_out, tag_all_speakers=True)
+        write_sentences_txt(combined_sentences, combined_out, main_speaker="", tag_all_speakers=False)
         print(f"Wrote {combined_out} ({len(combined_sentences)} sentences)")
 
     if args.create_social_srt_latin or args.create_social_srt_cyrillic:

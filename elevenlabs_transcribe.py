@@ -3,6 +3,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,8 @@ MIME_FALLBACK = {
     ".wma": "audio/x-ms-wma",
     ".webm": "audio/webm",
 }
+
+REGEX_META_RE = re.compile(r"[.^$*+?{}\[\]|()]")
 
 
 def normalize_additional_formats(raw_values: List[str]) -> List[str]:
@@ -142,14 +145,18 @@ def parse_args() -> argparse.Namespace:
             "Examples:\n"
             "  python elevenlabs_transcribe.py --path media/REC --json-out-dir media/JSON --create-srt --create-txt\n"
             "  python elevenlabs_transcribe.py --path media/REC/sample.mp3 --json-out-dir media/JSON --language-code deu\n"
-            "  python elevenlabs_transcribe.py --path media/REC --json-out-dir media/JSON --api-formats srt txt"
+            "  python elevenlabs_transcribe.py --path media/REC --json-out-dir media/JSON --api-formats srt txt\n"
+            "  python elevenlabs_transcribe.py --path \"media/REC/^PTT-.*[.]mp3$\" --json-out-dir media/JSON"
         ),
     )
     parser.add_argument(
         "--path",
         type=Path,
         default=None,
-        help="Input path. Accepts one audio/video file or a directory.",
+        help=(
+            "Input path. Accepts one audio/video file, a directory, or a path expression. "
+            "If the exact path does not exist but its parent directory exists, the last segment is treated as regex."
+        ),
     )
     parser.add_argument(
         "--json-out-dir",
@@ -339,9 +346,32 @@ def to_payload(result):
     return result
 
 
+def collect_regex_matches(path_expression: Path, allowed_exts: set[str], label: str) -> List[Path]:
+    parent = path_expression.parent
+    pattern = path_expression.name
+
+    if not parent.exists() or not parent.is_dir():
+        raise FileNotFoundError(f"{label} path not found: {path_expression}")
+    if not REGEX_META_RE.search(pattern):
+        raise FileNotFoundError(f"{label} path not found: {path_expression}")
+
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid regex in --path expression '{pattern}': {exc}") from exc
+
+    matches = sorted(
+        p for p in parent.iterdir()
+        if p.is_file() and p.suffix.lower() in allowed_exts and regex.search(p.name)
+    )
+    if not matches:
+        raise FileNotFoundError(f"No {label} files matched regex '{pattern}' in {parent}")
+    return matches
+
+
 def collect_audio_files(path: Path) -> List[Path]:
     if not path.exists():
-        raise FileNotFoundError(f"Input path not found: {path}")
+        return collect_regex_matches(path, ALLOWED_EXTS, "audio/video")
 
     if path.is_file():
         if path.suffix.lower() not in ALLOWED_EXTS:
@@ -529,7 +559,7 @@ def main() -> None:
                 if sentence_items:
                     remap = build_speaker_remap(payload.get("words") or [])
                     sentence_items = remap_sentence_items(sentence_items, remap)
-                    write_sentences_txt(sentence_items, out_txt, tag_all_speakers=True)
+                    write_sentences_txt(sentence_items, out_txt, main_speaker="", tag_all_speakers=False)
 
             written_files = [out_json.name]
             if out_srt is not None and out_srt.exists():
