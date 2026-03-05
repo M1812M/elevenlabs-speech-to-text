@@ -1,9 +1,39 @@
-# ElevenLabs Subtitle Toolkit
+﻿# ElevenLabs Subtitle Toolkit
 
-Two main CLIs:
+This project uses a `src/` layout with reusable core modules and thin CLI wrappers.
 
-- `elevenlabs_transcribe.py`: sends recordings to ElevenLabs and stores transcript outputs.
-- `transcript_transform.py`: local JSON/SRT transformations (no ElevenLabs API call).
+## Structure
+
+```text
+project/
+  pyproject.toml
+  README.md
+  .env.example
+
+  src/
+    elevenlabs_toolkit/
+      __init__.py
+      cli/
+        transcribe.py
+        transform.py
+      core/
+        stt_client.py
+        srt_builder.py
+      translit.py
+      io_paths.py
+      selectors.py
+      timecode.py
+      transcript_utils.py
+
+  scripts/
+    transcribe.py
+    transform.py
+
+  tests/
+    test_translit.py
+    test_srt_split.py
+    test_path_selectors.py
+```
 
 ## Requirements
 
@@ -13,12 +43,16 @@ Two main CLIs:
 - Optional: `python-dotenv`
 
 ```powershell
+pip install -e .
+```
+
+or:
+
+```powershell
 pip install elevenlabs tqdm python-dotenv
 ```
 
 ## Environment Setup
-
-Copy template and set your key locally:
 
 ```powershell
 Copy-Item .\.env.example .\.env
@@ -31,32 +65,33 @@ ELEVENLABS_API_KEY=your_key_here
 ## 1) Transcribe With ElevenLabs
 
 ```powershell
-python .\elevenlabs_transcribe.py --help
+python .\scripts\transcribe.py --help
 ```
 
 Behavior:
 - If no arguments are passed, it starts interactive prompts.
-- `--path` accepts either a file or a folder.
-- `--json-out-dir` accepts only a folder.
+- `--path` accepts one file, one folder, or a regex path expression.
+- `--json-out-dir` defaults to `media/JSON`.
 - Optional extras: `--create-srt`, `--create-txt`, `--language-code`, `--api-formats`.
 
 Examples:
 
 ```powershell
-python .\elevenlabs_transcribe.py
-python .\elevenlabs_transcribe.py --path .\media\REC --json-out-dir .\media\JSON --create-srt --create-txt
-python .\elevenlabs_transcribe.py --path .\media\REC\sample.mp3 --json-out-dir .\media\JSON --language-code deu
+python .\scripts\transcribe.py
+python .\scripts\transcribe.py --path .\media\REC --create-srt --create-txt
+python .\scripts\transcribe.py --path .\media\REC\sample.mp3 --language-code deu
+python .\scripts\transcribe.py --path .\media\REC --json-out-dir .\media\JSON-override
 ```
 
 ## 2) Transform Existing JSON/SRT
 
 ```powershell
-python .\transcript_transform.py --help
+python .\scripts\transform.py --help
 ```
 
 Behavior:
 - If no arguments are passed, it prints help and exits.
-- `--path` accepts file or folder.
+- `--path` accepts file, folder, or regex expression path.
 - You must select at least one action:
   - `--create-srt`
   - `--create-sentence-srt`
@@ -64,15 +99,16 @@ Behavior:
   - `--create-txt-combined`
   - `--create-social-srt-latin`
   - `--create-social-srt-cyrillic`
+  - `--create-social-srt-raw`
   - `--convert-latin-srt-to-cyrillic`
 
 Examples:
 
 ```powershell
-python .\transcript_transform.py --path .\media\JSON --create-srt --create-txt
-python .\transcript_transform.py --path .\media\JSON --create-txt-combined
-python .\transcript_transform.py --path .\media\JSON --create-social-srt-latin --create-social-srt-cyrillic
-python .\transcript_transform.py --path .\media\SRT-social --convert-latin-srt-to-cyrillic
+python .\scripts\transform.py --path .\media\JSON --create-srt --create-txt
+python .\scripts\transform.py --path .\media\JSON --create-txt-combined
+python .\scripts\transform.py --path .\media\JSON --create-social-srt-latin --create-social-srt-cyrillic
+python .\scripts\transform.py --path .\media\SRT-social --convert-latin-srt-to-cyrillic
 ```
 
 Combined TXT naming (`--create-txt-combined`):
