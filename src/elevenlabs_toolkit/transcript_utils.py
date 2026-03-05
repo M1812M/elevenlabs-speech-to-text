@@ -1,11 +1,24 @@
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 
 ELLIPSIS = "\u2026"
 SENTENCE_END_RE = re.compile(rf"[.!?{ELLIPSIS}]+$")
 PUNCT_SPACING_RE = re.compile(rf"\s+([,.;:!?{ELLIPSIS}])")
+MARKER_RE = re.compile(r"[A-Za-z\u0400-\u04FF\u2018\u2019']+")
+DEFAULT_TIMING_MARKERS = {
+    "keyin",
+    "shunda",
+    "lekin",
+    "ammo",
+    "biroq",
+    "xullas",
+    "mana",
+    "hozir",
+    "umuman",
+    "demak",
+}
 
 SentenceItem = Dict[str, Optional[str]]
 
@@ -122,10 +135,112 @@ def words_to_sentence_items(words: List[Dict]) -> List[SentenceItem]:
     return sentences
 
 
-def payload_to_sentence_items(payload: Dict) -> List[SentenceItem]:
+def _normalize_marker_token(text: str) -> str:
+    match = MARKER_RE.search(text)
+    if not match:
+        return ""
+    return match.group(0).lower()
+
+
+def words_to_sentence_items_with_timing(
+    words: List[Dict],
+    gap_split_seconds: float = 0.9,
+    hard_gap_split_seconds: float = 1.8,
+    marker_breaks: Optional[Set[str]] = None,
+) -> List[SentenceItem]:
+    """Build sentence items from word tokens, using pauses as split hints."""
+    parts: List[str] = []
+    sentences: List[SentenceItem] = []
+    speaker_counts: Dict[str, int] = {}
+    speaker_order: Dict[str, int] = {}
+    order_idx = 0
+    last_word_end: Optional[float] = None
+
+    markers = marker_breaks or DEFAULT_TIMING_MARKERS
+
+    def note_speaker(speaker_id: Optional[str]) -> None:
+        nonlocal order_idx
+        if not speaker_id:
+            return
+        speaker_counts[speaker_id] = speaker_counts.get(speaker_id, 0) + 1
+        if speaker_id not in speaker_order:
+            speaker_order[speaker_id] = order_idx
+            order_idx += 1
+
+    def pick_sentence_speaker() -> Optional[str]:
+        if not speaker_counts:
+            return None
+        return max(speaker_counts.items(), key=lambda kv: (kv[1], -speaker_order[kv[0]]))[0]
+
+    def flush() -> None:
+        nonlocal parts, speaker_counts, speaker_order, order_idx
+        if parts:
+            sentence = normalize_spaces("".join(parts))
+            if sentence:
+                sentences.append({"text": sentence, "speaker": pick_sentence_speaker()})
+        parts = []
+        speaker_counts = {}
+        speaker_order = {}
+        order_idx = 0
+
+    for word in words:
+        txt = (word.get("text") or "").strip()
+        if not txt:
+            continue
+
+        token_type = word.get("type")
+        if token_type == "punctuation":
+            parts.append(txt)
+            if SENTENCE_END_RE.search(txt):
+                flush()
+            continue
+        if token_type != "word":
+            continue
+
+        try:
+            start = float(word.get("start", 0.0) or 0.0)
+            end = float(word.get("end", start) or start)
+        except (TypeError, ValueError):
+            start = 0.0
+            end = start
+
+        if parts and last_word_end is not None:
+            gap = max(0.0, start - last_word_end)
+            marker = _normalize_marker_token(txt)
+            marker_trigger = bool(marker) and marker in markers
+            if gap >= hard_gap_split_seconds or (gap >= gap_split_seconds and marker_trigger):
+                flush()
+
+        if parts and not parts[-1].endswith((" ", "\n")):
+            parts.append(" ")
+        parts.append(txt)
+        note_speaker(get_speaker_id(word))
+        last_word_end = end
+
+        if SENTENCE_END_RE.search(txt):
+            flush()
+
+    flush()
+    return sentences
+
+
+def payload_to_sentence_items(
+    payload: Dict,
+    use_timing_split: bool = False,
+    gap_split_seconds: float = 0.9,
+    hard_gap_split_seconds: float = 1.8,
+    marker_breaks: Optional[Set[str]] = None,
+) -> List[SentenceItem]:
     """Extract sentence items from payload (prefers word-level timing)."""
     words = payload.get("words")
     if isinstance(words, list) and words:
+        if use_timing_split:
+            return words_to_sentence_items_with_timing(
+                words,
+                gap_split_seconds=gap_split_seconds,
+                hard_gap_split_seconds=hard_gap_split_seconds,
+                marker_breaks=marker_breaks,
+            )
         return words_to_sentence_items(words)
 
     segments = payload.get("segments") or []
@@ -191,4 +306,3 @@ def remap_sentence_items(sentence_items: List[SentenceItem], remap: Dict[str, st
             continue
         remapped.append(item)
     return remapped
-

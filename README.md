@@ -20,6 +20,7 @@ project/
         stt_client.py
         srt_builder.py
       translit.py
+      uzbek_cleanup.py
       io_paths.py
       selectors.py
       timecode.py
@@ -30,9 +31,13 @@ project/
     transform.py
 
   tests/
+    test_cli_uzbek_clean_flow.py
+    test_html_conversion_flow.py
     test_translit.py
     test_srt_split.py
     test_path_selectors.py
+    test_timing_sentence_split.py
+    test_uzbek_cleanup.py
 ```
 
 ## Requirements
@@ -97,16 +102,22 @@ Behavior:
   - `--create-sentence-srt`
   - `--create-txt`
   - `--create-txt-combined`
+  - `--create-clean-json`
   - `--create-social-srt-latin`
   - `--create-social-srt-cyrillic`
   - `--create-social-srt-raw`
   - `--convert-latin-srt-to-cyrillic`
+- Uzbek readability options:
+  - `--uzbek-clean` applies orthography/casing cleanup to generated outputs.
+  - `--sentence-gap-seconds` and `--sentence-hard-gap-seconds` control pause-based sentence splitting for TXT.
+  - `--create-clean-json` creates `_uz_clean.json` files and keeps originals untouched.
 
 Examples:
 
 ```powershell
 python .\scripts\transform.py --path .\media\JSON --create-srt --create-txt
 python .\scripts\transform.py --path .\media\JSON --create-txt-combined
+python .\scripts\transform.py --path .\media\JSON --create-clean-json --uzbek-clean
 python .\scripts\transform.py --path .\media\JSON --create-social-srt-latin --create-social-srt-cyrillic
 python .\scripts\transform.py --path .\media\SRT-social --convert-latin-srt-to-cyrillic
 ```
