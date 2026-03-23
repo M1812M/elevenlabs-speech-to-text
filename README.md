@@ -78,6 +78,7 @@ Behavior:
 - `--path` accepts one file, one folder, or a regex path expression.
 - `--json-out-dir` defaults to `media/JSON`.
 - Optional extras: `--create-srt`, `--create-txt`, `--language-code`, `--api-formats`.
+- `--pause-detection` enables experimental pause detection from stretched character timings for locally generated outputs.
 
 Examples:
 
@@ -85,6 +86,7 @@ Examples:
 python .\scripts\transcribe.py
 python .\scripts\transcribe.py --path .\media\REC --create-srt --create-txt
 python .\scripts\transcribe.py --path .\media\REC\sample.mp3 --language-code deu
+python .\scripts\transcribe.py --path .\media\REC --json-out-dir .\media\JSON-char --timestamps-granularity character --pause-detection
 python .\scripts\transcribe.py --path .\media\REC --json-out-dir .\media\JSON-override
 ```
 
@@ -111,6 +113,7 @@ Behavior:
   - `--uzbek-clean` applies orthography/casing cleanup to generated outputs.
   - `--sentence-gap-seconds` and `--sentence-hard-gap-seconds` control pause-based sentence splitting for TXT.
   - `--create-clean-json` creates `_uz_clean.json` files and keeps originals untouched.
+- `--pause-detection` enables experimental pause detection from stretched character timings and works best with JSON created using `--timestamps-granularity character`.
 
 Examples:
 
@@ -119,6 +122,7 @@ python .\scripts\transform.py --path .\media\JSON --create-srt --create-txt
 python .\scripts\transform.py --path .\media\JSON --create-txt-combined
 python .\scripts\transform.py --path .\media\JSON --create-clean-json --uzbek-clean
 python .\scripts\transform.py --path .\media\JSON --create-social-srt-latin --create-social-srt-cyrillic
+python .\scripts\transform.py --path .\media\JSON-char --create-social-srt-latin --pause-detection
 python .\scripts\transform.py --path .\media\SRT-social --convert-latin-srt-to-cyrillic
 ```
 

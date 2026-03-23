@@ -137,6 +137,15 @@ def parse_args() -> Optional[argparse.Namespace]:
         ),
     )
     parser.add_argument(
+        "--pause-detection",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Experimental: detect possible pauses from stretched character timings when available. "
+            "Works best with JSON created using --timestamps-granularity character."
+        ),
+    )
+    parser.add_argument(
         "--create-social-srt-latin",
         action="store_true",
         help="Create *_social_latin.srt from JSON inputs.",
@@ -288,7 +297,7 @@ def main() -> None:
         for path in json_files:
             payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
             words = payload.get("words") or []
-            tokens = build_standard_tokens(words)
+            tokens = build_standard_tokens(words, pause_detection=args.pause_detection)
             cues = tokens_to_standard_cues(tokens)
 
             out_srt = srt_out_dir / f"{path.stem}.srt"
@@ -312,9 +321,10 @@ def main() -> None:
 
             sentences = payload_to_sentence_items(
                 payload,
-                use_timing_split=args.uzbek_clean,
+                use_timing_split=(args.uzbek_clean or args.pause_detection),
                 gap_split_seconds=args.sentence_gap_seconds,
                 hard_gap_split_seconds=args.sentence_hard_gap_seconds,
+                pause_detection=args.pause_detection,
             )
             if sentences:
                 remap = build_speaker_remap(payload.get("words") or [])
@@ -344,9 +354,10 @@ def main() -> None:
             payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
             sentences = payload_to_sentence_items(
                 payload,
-                use_timing_split=args.uzbek_clean,
+                use_timing_split=(args.uzbek_clean or args.pause_detection),
                 gap_split_seconds=args.sentence_gap_seconds,
                 hard_gap_split_seconds=args.sentence_hard_gap_seconds,
+                pause_detection=args.pause_detection,
             )
             remap = build_speaker_remap(payload.get("words") or [])
             sentences = remap_sentence_items(sentences, remap)
@@ -378,7 +389,7 @@ def main() -> None:
 
         for path in json_files:
             payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
-            tokens = build_social_word_tokens(payload)
+            tokens = build_social_word_tokens(payload, pause_detection=args.pause_detection)
             cues = tokens_to_social_cues(tokens)
 
             if args.create_social_srt_cyrillic:

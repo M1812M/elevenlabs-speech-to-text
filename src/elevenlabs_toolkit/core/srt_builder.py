@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from ..pause_detection import detected_pause_gap, effective_word_end
 from ..timecode import srt_timestamp
 from ..transcript_utils import get_speaker_id, normalize_spaces
 
@@ -12,6 +13,7 @@ MAX_CHARS = MAX_CHARS_PER_LINE * MAX_LINES
 MAX_DURATION = 5.5
 MIN_DURATION = 1.0
 GAP_SPLIT = 0.9
+DETECTED_PAUSE_GAP_SPLIT = 0.6
 PUNCT_END_RE = re.compile(r"[.!?\u2026]+$")
 
 SOCIAL_MAX_CHARS_PER_LINE = 30
@@ -21,6 +23,7 @@ SOCIAL_MAX_WORDS = 9
 SOCIAL_MAX_DURATION = 2.6
 SOCIAL_MIN_DURATION = 0.9
 SOCIAL_GAP_SPLIT = 0.75
+SOCIAL_DURATION_EPSILON = 1e-6
 SOCIAL_HARD_END_RE = re.compile(r"[.!?\u2026]+$")
 SOCIAL_SOFT_END_RE = re.compile(r"[,;:]+$")
 
@@ -70,7 +73,7 @@ def wrap_two_lines(text: str, max_chars_per_line: int = MAX_CHARS_PER_LINE) -> s
     return joined.strip()
 
 
-def build_standard_tokens(words: List[Dict]) -> List[Dict]:
+def build_standard_tokens(words: List[Dict], pause_detection: bool = False) -> List[Dict]:
     tokens = []
     for word in words:
         if word.get("type") != "word":
@@ -82,7 +85,8 @@ def build_standard_tokens(words: List[Dict]) -> List[Dict]:
             {
                 "text": txt,
                 "start": float(word.get("start", 0.0)),
-                "end": float(word.get("end", 0.0)),
+                "end": effective_word_end(word, pause_detection=pause_detection),
+                "pause_after": detected_pause_gap(word, pause_detection=pause_detection) >= DETECTED_PAUSE_GAP_SPLIT,
                 "speaker": get_speaker_id(word),
             }
         )
@@ -98,6 +102,7 @@ def tokens_to_standard_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]
     cur_start: Optional[float] = None
     cur_end: Optional[float] = None
     last_end: Optional[float] = None
+    last_pause_after = False
 
     def flush() -> None:
         nonlocal cur_text_parts, cur_start, cur_end
@@ -125,12 +130,14 @@ def tokens_to_standard_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]
             last_end = en
             continue
 
-        if last_end is not None and (st - last_end) > GAP_SPLIT:
+        gap_after_last = (st - last_end) if last_end is not None else 0.0
+        if last_end is not None and (gap_after_last > GAP_SPLIT or (last_pause_after and gap_after_last >= DETECTED_PAUSE_GAP_SPLIT)):
             flush()
             cur_start = st
             cur_end = en
             cur_text_parts = [txt]
             last_end = en
+            last_pause_after = bool(token.get("pause_after"))
             continue
 
         candidate = normalize_spaces(" ".join(cur_text_parts + [txt]))
@@ -155,6 +162,7 @@ def tokens_to_standard_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]
             cur_end = en
 
         last_end = en
+        last_pause_after = bool(token.get("pause_after"))
 
     flush()
 
@@ -227,7 +235,7 @@ def social_normalize(text: str) -> str:
     return text
 
 
-def build_social_word_tokens(payload: Dict) -> List[Dict]:
+def build_social_word_tokens(payload: Dict, pause_detection: bool = False) -> List[Dict]:
     out = []
     for word in payload.get("words", []):
         if word.get("type") != "word":
@@ -235,7 +243,14 @@ def build_social_word_tokens(payload: Dict) -> List[Dict]:
         txt = word.get("text", "")
         if not txt:
             continue
-        out.append({"text": txt, "start": float(word.get("start", 0.0)), "end": float(word.get("end", 0.0))})
+        out.append(
+            {
+                "text": txt,
+                "start": float(word.get("start", 0.0)),
+                "end": effective_word_end(word, pause_detection=pause_detection),
+                "pause_after": detected_pause_gap(word, pause_detection=pause_detection) >= DETECTED_PAUSE_GAP_SPLIT,
+            }
+        )
     return out
 
 
@@ -246,6 +261,7 @@ def tokens_to_social_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
     cur_parts: List[str] = []
     cur_words = 0
     last_end: Optional[float] = None
+    last_pause_after = False
 
     def flush() -> None:
         nonlocal cur_start, cur_end, cur_parts, cur_words
@@ -266,7 +282,11 @@ def tokens_to_social_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
         if cur_start is None:
             cur_start = st
 
-        if last_end is not None and (st - last_end) > SOCIAL_GAP_SPLIT and cur_parts:
+        gap_after_last = (st - last_end) if last_end is not None else 0.0
+        if last_end is not None and (
+            gap_after_last > SOCIAL_GAP_SPLIT
+            or (last_pause_after and gap_after_last >= DETECTED_PAUSE_GAP_SPLIT)
+        ) and cur_parts:
             flush()
             cur_start = st
 
@@ -286,7 +306,7 @@ def tokens_to_social_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
         hard_limit_hit = (
             len(tentative_text) > SOCIAL_MAX_CHARS
             or tentative_words > SOCIAL_MAX_WORDS
-            or tentative_dur > SOCIAL_MAX_DURATION
+            or tentative_dur > (SOCIAL_MAX_DURATION + SOCIAL_DURATION_EPSILON)
         )
         if hard_limit_hit and cur_parts:
             flush()
@@ -295,6 +315,7 @@ def tokens_to_social_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
             cur_words = 1
             cur_end = en
             last_end = en
+            last_pause_after = bool(token.get("pause_after"))
             continue
 
         if SOCIAL_SOFT_END_RE.search(tentative_text):
@@ -304,12 +325,14 @@ def tokens_to_social_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
                 cur_end = en
                 flush()
                 last_end = en
+                last_pause_after = bool(token.get("pause_after"))
                 continue
 
         cur_parts = tentative_parts
         cur_words = tentative_words
         cur_end = en
         last_end = en
+        last_pause_after = bool(token.get("pause_after"))
 
     flush()
 
@@ -319,7 +342,7 @@ def tokens_to_social_cues(tokens: List[Dict]) -> List[Tuple[float, float, str]]:
             prev_start, _prev_end, prev_text = merged[-1]
             if (en - st) < SOCIAL_MIN_DURATION:
                 candidate = social_normalize(prev_text + " " + tx)
-                if len(candidate) <= SOCIAL_MAX_CHARS and (en - prev_start) <= SOCIAL_MAX_DURATION:
+                if len(candidate) <= SOCIAL_MAX_CHARS and (en - prev_start) <= (SOCIAL_MAX_DURATION + SOCIAL_DURATION_EPSILON):
                     merged[-1] = (prev_start, en, candidate)
                     continue
         merged.append((st, en, tx))
@@ -340,11 +363,18 @@ def cues_to_social_srt(cues: List[Tuple[float, float, str]], transform: Optional
     return "\n".join(out)
 
 
-def words_to_basic_srt(words: List[Dict], max_chars: int = MAX_CHARS, max_dur: float = MAX_DURATION) -> str:
+def words_to_basic_srt(
+    words: List[Dict],
+    max_chars: int = MAX_CHARS,
+    max_dur: float = MAX_DURATION,
+    pause_detection: bool = False,
+) -> str:
     cues = []
     cur_text = ""
     cur_start: Optional[float] = None
     cur_end: Optional[float] = None
+    last_end: Optional[float] = None
+    last_pause_after = False
 
     def flush() -> None:
         nonlocal cur_text, cur_start, cur_end
@@ -361,9 +391,14 @@ def words_to_basic_srt(words: List[Dict], max_chars: int = MAX_CHARS, max_dur: f
         if not txt:
             continue
         st = float(word.get("start", 0.0))
-        en = float(word.get("end", st))
+        en = effective_word_end(word, pause_detection=pause_detection)
 
         if cur_start is None:
+            cur_start = st
+
+        gap_after_last = (st - last_end) if last_end is not None else 0.0
+        if last_end is not None and (gap_after_last > GAP_SPLIT or (last_pause_after and gap_after_last >= DETECTED_PAUSE_GAP_SPLIT)):
+            flush()
             cur_start = st
 
         candidate = f"{cur_text} {txt}" if cur_text else txt
@@ -375,6 +410,8 @@ def words_to_basic_srt(words: List[Dict], max_chars: int = MAX_CHARS, max_dur: f
 
         cur_text = candidate
         cur_end = en
+        last_end = en
+        last_pause_after = detected_pause_gap(word, pause_detection=pause_detection) >= DETECTED_PAUSE_GAP_SPLIT
 
     flush()
 

@@ -190,6 +190,15 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SLEEP_SECONDS,
         help="Delay between requests to ElevenLabs API.",
     )
+    parser.add_argument(
+        "--pause-detection",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Experimental: detect possible pauses from stretched character timings when available. "
+            "Works best with --timestamps-granularity character for locally generated outputs."
+        ),
+    )
 
     if len(sys.argv) == 1:
         return interactive_args(parser)
@@ -241,6 +250,7 @@ def main() -> None:
         f"timestamps_granularity={args.timestamps_granularity}, "
         f"create_srt={args.create_srt}, "
         f"create_txt={args.create_txt}, "
+        f"pause_detection={args.pause_detection}, "
         f"api_formats={args.api_formats or []}"
     )
 
@@ -302,10 +312,14 @@ def main() -> None:
                     {"type": "word", "start": segment["start"], "end": segment["end"], "text": segment["text"]}
                     for segment in payload.get("segments", [])
                 ]
-                out_srt.write_text(words_to_basic_srt(words), encoding="utf-8")
+                out_srt.write_text(words_to_basic_srt(words, pause_detection=args.pause_detection), encoding="utf-8")
 
             if out_txt is not None and "txt" not in api_written_formats:
-                sentence_items = payload_to_sentence_items(payload)
+                sentence_items = payload_to_sentence_items(
+                    payload,
+                    use_timing_split=args.pause_detection,
+                    pause_detection=args.pause_detection,
+                )
                 if sentence_items:
                     remap = build_speaker_remap(payload.get("words") or [])
                     sentence_items = remap_sentence_items(sentence_items, remap)

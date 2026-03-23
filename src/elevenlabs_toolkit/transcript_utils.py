@@ -2,6 +2,8 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from .pause_detection import detected_pause_gap, effective_word_end
+
 
 ELLIPSIS = "\u2026"
 SENTENCE_END_RE = re.compile(rf"[.!?{ELLIPSIS}]+$")
@@ -19,6 +21,7 @@ DEFAULT_TIMING_MARKERS = {
     "umuman",
     "demak",
 }
+DETECTED_PAUSE_GAP_SPLIT = 0.6
 
 SentenceItem = Dict[str, Optional[str]]
 
@@ -147,6 +150,7 @@ def words_to_sentence_items_with_timing(
     gap_split_seconds: float = 0.9,
     hard_gap_split_seconds: float = 1.8,
     marker_breaks: Optional[Set[str]] = None,
+    pause_detection: bool = False,
 ) -> List[SentenceItem]:
     """Build sentence items from word tokens, using pauses as split hints."""
     parts: List[str] = []
@@ -155,6 +159,7 @@ def words_to_sentence_items_with_timing(
     speaker_order: Dict[str, int] = {}
     order_idx = 0
     last_word_end: Optional[float] = None
+    last_pause_after = False
 
     markers = marker_breaks or DEFAULT_TIMING_MARKERS
 
@@ -199,7 +204,7 @@ def words_to_sentence_items_with_timing(
 
         try:
             start = float(word.get("start", 0.0) or 0.0)
-            end = float(word.get("end", start) or start)
+            end = effective_word_end(word, pause_detection=pause_detection)
         except (TypeError, ValueError):
             start = 0.0
             end = start
@@ -208,7 +213,11 @@ def words_to_sentence_items_with_timing(
             gap = max(0.0, start - last_word_end)
             marker = _normalize_marker_token(txt)
             marker_trigger = bool(marker) and marker in markers
-            if gap >= hard_gap_split_seconds or (gap >= gap_split_seconds and marker_trigger):
+            if (
+                gap >= hard_gap_split_seconds
+                or (gap >= gap_split_seconds and marker_trigger)
+                or (last_pause_after and gap >= min(gap_split_seconds, DETECTED_PAUSE_GAP_SPLIT))
+            ):
                 flush()
 
         if parts and not parts[-1].endswith((" ", "\n")):
@@ -216,6 +225,7 @@ def words_to_sentence_items_with_timing(
         parts.append(txt)
         note_speaker(get_speaker_id(word))
         last_word_end = end
+        last_pause_after = detected_pause_gap(word, pause_detection=pause_detection) >= DETECTED_PAUSE_GAP_SPLIT
 
         if SENTENCE_END_RE.search(txt):
             flush()
@@ -230,6 +240,7 @@ def payload_to_sentence_items(
     gap_split_seconds: float = 0.9,
     hard_gap_split_seconds: float = 1.8,
     marker_breaks: Optional[Set[str]] = None,
+    pause_detection: bool = False,
 ) -> List[SentenceItem]:
     """Extract sentence items from payload (prefers word-level timing)."""
     words = payload.get("words")
@@ -240,6 +251,7 @@ def payload_to_sentence_items(
                 gap_split_seconds=gap_split_seconds,
                 hard_gap_split_seconds=hard_gap_split_seconds,
                 marker_breaks=marker_breaks,
+                pause_detection=pause_detection,
             )
         return words_to_sentence_items(words)
 
