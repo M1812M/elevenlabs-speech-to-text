@@ -1,15 +1,10 @@
 import json
-import shutil
 import subprocess
-import sys
+import tempfile
 import unittest
-import uuid
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
+from cli_support import ROOT, module_cmd, python_env
 from elevenlabs_toolkit.core.marker_builder import cues_to_marker_edl, seconds_to_edl_timecode
 
 
@@ -32,12 +27,8 @@ class MarkerBuilderTests(unittest.TestCase):
         self.assertIn("|C:ResolveColorBlue |M:Sentence 2 |D:1", edl)
 
     def test_cli_create_marker_writes_edl(self) -> None:
-        tmp_root = Path("_tmp_marker_test")
-        tmp_root.mkdir(parents=True, exist_ok=True)
-        tmp_path = tmp_root / f"case_{uuid.uuid4().hex}"
-        tmp_path.mkdir()
-
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
             source_json = tmp_path / "sample.json"
             marker_out_dir = tmp_path / "markers"
 
@@ -53,8 +44,7 @@ class MarkerBuilderTests(unittest.TestCase):
             source_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
             cmd = [
-                sys.executable,
-                "scripts/transform.py",
+                *module_cmd("elevenlabs_toolkit.cli.transform"),
                 "--path",
                 str(source_json),
                 "--create-marker",
@@ -63,15 +53,13 @@ class MarkerBuilderTests(unittest.TestCase):
                 "--marker-fps",
                 "25",
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, env=python_env())
             self.assertEqual(result.returncode, 0, msg=f"stdout={result.stdout}\nstderr={result.stderr}")
 
             edl_path = marker_out_dir / "sample.edl"
             self.assertTrue(edl_path.exists())
             edl_text = edl_path.read_text(encoding="utf-8")
             self.assertIn("|M:Sentence 1 |D:1", edl_text)
-        finally:
-            shutil.rmtree(tmp_path, ignore_errors=True)
 
 
 if __name__ == "__main__":

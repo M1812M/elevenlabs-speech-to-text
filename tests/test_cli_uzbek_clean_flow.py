@@ -1,9 +1,10 @@
 import json
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from cli_support import ROOT, module_cmd, python_env
 
 
 class UzbekCleanFlowTests(unittest.TestCase):
@@ -30,8 +31,7 @@ class UzbekCleanFlowTests(unittest.TestCase):
             source_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
             cmd = [
-                sys.executable,
-                "scripts/transform.py",
+                *module_cmd("elevenlabs_toolkit.cli.transform"),
                 "--path",
                 str(source_json),
                 "--create-clean-json",
@@ -40,7 +40,7 @@ class UzbekCleanFlowTests(unittest.TestCase):
                 str(txt_out_dir),
                 "--uzbek-clean",
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, env=python_env())
             self.assertEqual(result.returncode, 0, msg=f"stdout={result.stdout}\nstderr={result.stderr}")
 
             clean_json = tmp_path / "sample_uz_clean.json"
@@ -62,4 +62,3 @@ class UzbekCleanFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

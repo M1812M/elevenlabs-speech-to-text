@@ -1,4 +1,4 @@
-﻿[build-system]
+[build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
@@ -14,8 +14,21 @@ dependencies = [
   "python-dotenv",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[project.scripts]
+elevenlabs-transcribe = "elevenlabs_toolkit.cli.transcribe:main"
+elevenlabs-transform = "elevenlabs_toolkit.cli.transform:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

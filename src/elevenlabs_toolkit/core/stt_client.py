@@ -1,10 +1,10 @@
-﻿import base64
+import base64
 import mimetypes
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..io_paths import BASE_DIR
+from elevenlabs_toolkit.io_paths import BASE_DIR
 
 
 MODEL_ID = "scribe_v2"
@@ -52,14 +52,15 @@ def load_api_key() -> str:
 
     try:
         from dotenv import load_dotenv
+    except ImportError:
+        load_dotenv = None
 
+    if load_dotenv is not None:
         load_dotenv(str(BASE_DIR / ".env"))
         api_key = os.getenv("ELEVENLABS_API_KEY")
         if api_key:
             print("Loaded ELEVENLABS_API_KEY from .env (python-dotenv)")
             return api_key
-    except Exception:
-        pass
 
     env_path = BASE_DIR / ".env"
     if env_path.exists():

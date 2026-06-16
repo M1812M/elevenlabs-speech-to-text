@@ -17,6 +17,7 @@ project/
         transcribe.py
         transform.py
       core/
+        marker_builder.py
         stt_client.py
         srt_builder.py
       translit.py
@@ -71,6 +72,8 @@ ELEVENLABS_API_KEY=your_key_here
 
 ```powershell
 python .\scripts\transcribe.py --help
+# or, after `pip install -e .`
+elevenlabs-transcribe --help
 ```
 
 Behavior:
@@ -94,6 +97,8 @@ python .\scripts\transcribe.py --path .\media\REC --json-out-dir .\media\JSON-ov
 
 ```powershell
 python .\scripts\transform.py --help
+# or, after `pip install -e .`
+elevenlabs-transform --help
 ```
 
 Behavior:
@@ -115,6 +120,7 @@ Behavior:
   - `--sentence-gap-seconds` and `--sentence-hard-gap-seconds` control pause-based sentence splitting for TXT.
   - `--create-clean-json` creates `_uz_clean.json` files and keeps originals untouched.
 - `--pause-detection` enables experimental pause detection from stretched character timings and works best with JSON created using `--timestamps-granularity character`.
+- Per-source transform outputs default next to each source JSON/SRT file unless an explicit output argument is passed. Use `--srt-out-dir`, `--txt-out-dir`, `--social-out-dir`, `--marker-out-dir`, `--latin-cyr-out-dir`, `--clean-json-out-dir`, or `--combined-txt-path` to override.
 
 Examples:
 
@@ -131,7 +137,7 @@ python .\scripts\transform.py --path .\media\SRT-social --convert-latin-srt-to-c
 Marker EDL notes (`--create-marker`):
 - Creates one DaVinci Resolve-style EDL marker per standard subtitle cue.
 - Markers are placed at each cue start with a 1-frame duration, which mirrors `--create-sentence-srt` cue boundaries.
-- Default output folder is `media/MARKER`.
+- Marker EDL files default next to each source JSON file unless `--marker-out-dir` is passed.
 - Use `--marker-fps` to match your Resolve timeline frame rate.
 
 Combined TXT naming (`--create-txt-combined`):

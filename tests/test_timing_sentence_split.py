@@ -1,10 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from elevenlabs_toolkit.transcript_utils import payload_to_sentence_items
 
@@ -37,4 +31,3 @@ class TimingSentenceSplitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

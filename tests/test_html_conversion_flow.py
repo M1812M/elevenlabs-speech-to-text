@@ -1,8 +1,9 @@
-﻿import subprocess
-import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+from cli_support import ROOT, module_cmd, python_env
 
 
 class HtmlConversionFlowTests(unittest.TestCase):
@@ -21,13 +22,12 @@ class HtmlConversionFlowTests(unittest.TestCase):
             )
 
             cmd = [
-                sys.executable,
-                "scripts/transform.py",
+                *module_cmd("elevenlabs_toolkit.cli.transform"),
                 "--path",
                 str(source),
                 "--convert-latin-srt-to-cyrillic",
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, env=python_env())
 
             self.assertEqual(result.returncode, 0, msg=f"stdout={result.stdout}\nstderr={result.stderr}")
 

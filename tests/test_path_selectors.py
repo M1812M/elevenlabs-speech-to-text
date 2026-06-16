@@ -1,13 +1,8 @@
-﻿import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
-from elevenlabs_toolkit.selectors import collect_json_sources
+from elevenlabs_toolkit.selectors import collect_audio_files, collect_json_sources
 
 
 class PathSelectorTests(unittest.TestCase):
@@ -29,6 +24,18 @@ class PathSelectorTests(unittest.TestCase):
                     "2025-06 Gulchihra 2 Surgery.json",
                 ],
             )
+
+    def test_collect_audio_files_supports_glob_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "a.flac").write_text("", encoding="utf-8")
+            (tmp_path / "b.flac").write_text("", encoding="utf-8")
+            (tmp_path / "c.mp3").write_text("", encoding="utf-8")
+
+            selected = collect_audio_files(tmp_path / "*.flac")
+            names = [path.name for path in selected]
+
+            self.assertEqual(names, ["a.flac", "b.flac"])
 
 
 if __name__ == "__main__":

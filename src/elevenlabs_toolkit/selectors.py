@@ -4,6 +4,7 @@ from typing import Iterable, List
 
 
 REGEX_META_RE = re.compile(r"[.^$*+?{}\[\]|()]")
+GLOB_META_RE = re.compile(r"[*?\[]")
 
 ALLOWED_AUDIO_EXTS = {
     ".wav",
@@ -19,21 +20,29 @@ ALLOWED_AUDIO_EXTS = {
 }
 
 
-def _collect_regex_matches(path_expression: Path, predicate, label: str) -> List[Path]:
+def _collect_expression_matches(path_expression: Path, suffixes: Iterable[str], label: str) -> List[Path]:
     parent = path_expression.parent
     pattern = path_expression.name
+    suffix_set = {value.lower() for value in suffixes}
 
     if not parent.exists() or not parent.is_dir():
         raise FileNotFoundError(f"{label} path not found: {path_expression}")
     if not REGEX_META_RE.search(pattern):
         raise FileNotFoundError(f"{label} path not found: {path_expression}")
 
+    if GLOB_META_RE.search(pattern) and not (pattern.startswith("^") or pattern.endswith("$")):
+        return _collect_by_glob(parent, pattern, suffix_set, label)
+
     try:
         regex = re.compile(pattern)
     except re.error as exc:
         raise ValueError(f"Invalid regex in --path expression '{pattern}': {exc}") from exc
 
-    matches = sorted(path for path in parent.iterdir() if path.is_file() and predicate(path, regex))
+    matches = sorted(
+        path
+        for path in parent.iterdir()
+        if path.is_file() and path.suffix.lower() in suffix_set and regex.search(path.name)
+    )
     if not matches:
         raise FileNotFoundError(f"No {label} files matched regex '{pattern}' in {parent}")
     return matches
@@ -53,11 +62,7 @@ def _collect_by_glob(directory: Path, glob_pattern: str, suffixes: Iterable[str]
 
 def collect_audio_files(path: Path) -> List[Path]:
     if not path.exists():
-        return _collect_regex_matches(
-            path,
-            lambda p, regex: p.suffix.lower() in ALLOWED_AUDIO_EXTS and regex.search(p.name),
-            "audio/video",
-        )
+        return _collect_expression_matches(path, ALLOWED_AUDIO_EXTS, "audio/video")
 
     if path.is_file():
         if path.suffix.lower() not in ALLOWED_AUDIO_EXTS:
@@ -83,11 +88,7 @@ def collect_audio_files(path: Path) -> List[Path]:
 
 def collect_json_sources(path: Path, glob_pattern: str = "*.json") -> List[Path]:
     if not path.exists():
-        return _collect_regex_matches(
-            path,
-            lambda p, regex: p.suffix.lower() == ".json" and regex.search(p.name),
-            "JSON",
-        )
+        return _collect_expression_matches(path, [".json"], "JSON")
 
     if path.is_file():
         if path.suffix.lower() != ".json":
@@ -102,11 +103,7 @@ def collect_json_sources(path: Path, glob_pattern: str = "*.json") -> List[Path]
 
 def collect_latin_srt_sources(path: Path, glob_pattern: str = "*_latin.srt") -> List[Path]:
     if not path.exists():
-        return _collect_regex_matches(
-            path,
-            lambda p, regex: p.suffix.lower() == ".srt" and regex.search(p.name),
-            "Latin SRT",
-        )
+        return _collect_expression_matches(path, [".srt"], "Latin SRT")
 
     if path.is_file():
         if path.suffix.lower() != ".srt":

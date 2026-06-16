@@ -1,12 +1,11 @@
-﻿import argparse
+import argparse
 import json
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
-from elevenlabs.client import ElevenLabs
-from tqdm import tqdm
+from elevenlabs_toolkit.io_paths import MEDIA_DIR
 
 from ..core.srt_builder import words_to_basic_srt
 from ..core.stt_client import (
@@ -25,7 +24,6 @@ from ..core.stt_client import (
     to_payload,
     write_api_additional_formats,
 )
-from ..io_paths import JSON_DIR
 from ..selectors import collect_audio_files
 from ..transcript_utils import (
     build_speaker_remap,
@@ -37,6 +35,56 @@ from ..transcript_utils import (
 
 class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
     pass
+
+
+class PlainProgress:
+    def __init__(self, *args, **kwargs):
+        self.iterable = args[0] if args else None
+
+    def __iter__(self):
+        return iter(self.iterable or [])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        return False
+
+    def update(self, _amount: int) -> None:
+        pass
+
+
+def progress(*args, **kwargs):
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return PlainProgress(*args, **kwargs)
+    return tqdm(*args, **kwargs)
+
+
+def progress_write(message: str) -> None:
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        print(message)
+    else:
+        tqdm.write(message)
+
+
+def create_elevenlabs_client(api_key: str):
+    try:
+        from elevenlabs.client import ElevenLabs
+    except ImportError:
+        print(
+            "Missing Python package 'elevenlabs'. Install this project's dependencies with:\n"
+            "  python -m pip install -e .\n"
+            "or install the SDK directly with:\n"
+            "  python -m pip install elevenlabs",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    return ElevenLabs(api_key=api_key)
 
 
 def prompt_yes_no(prompt: str, default: bool = False) -> bool:
@@ -66,7 +114,7 @@ def interactive_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
             break
         print(f"Path not found: {input_path}")
 
-    json_default = JSON_DIR.resolve()
+    json_default = MEDIA_DIR.resolve()
     while True:
         json_out_raw = input(f"JSON output folder [{json_default}]: ").strip().strip('"')
         json_out_dir = Path(json_out_raw) if json_out_raw else json_default
@@ -119,7 +167,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--json-out-dir",
         type=Path,
-        default=JSON_DIR,
+        default=MEDIA_DIR,
         help="Directory where JSON transcripts are written.",
     )
     parser.add_argument(
@@ -240,7 +288,7 @@ def main() -> None:
         args.include_timestamps,
     )
 
-    client = ElevenLabs(api_key=api_key)
+    client = create_elevenlabs_client(api_key)
 
     print(f"Python: {sys.executable}")
     print(f"Found {len(audio_files)} file(s) from: {input_path}")
@@ -254,7 +302,9 @@ def main() -> None:
         f"api_formats={args.api_formats or []}"
     )
 
-    for idx, audio_path in enumerate(tqdm(audio_files, desc="Transcribing", unit="file"), start=1):
+    failed_files = []
+
+    for idx, audio_path in enumerate(progress(audio_files, desc="Transcribing", unit="file"), start=1):
         stem = audio_path.stem
         out_json = json_out_dir / f"{stem}.json"
         out_srt = (srt_out_dir / f"{stem}.srt") if srt_out_dir else None
@@ -267,11 +317,11 @@ def main() -> None:
             expected.append(out_txt)
 
         if (not args.overwrite) and expected and all(path.exists() for path in expected):
-            tqdm.write(f"[{idx}/{len(audio_files)}] SKIP (exists): {audio_path.name}")
+            progress_write(f"[{idx}/{len(audio_files)}] SKIP (exists): {audio_path.name}")
             continue
 
         mime = guess_mime(audio_path)
-        tqdm.write(f"[{idx}/{len(audio_files)}] Transcribing: {audio_path.name} (mime={mime})")
+        progress_write(f"[{idx}/{len(audio_files)}] Transcribing: {audio_path.name} (mime={mime})")
 
         try:
             filesize = audio_path.stat().st_size
@@ -286,7 +336,7 @@ def main() -> None:
             if additional_format_options:
                 convert_kwargs["additional_formats"] = additional_format_options
 
-            with audio_path.open("rb") as file_obj, tqdm(
+            with audio_path.open("rb") as file_obj, progress(
                 total=filesize,
                 unit="B",
                 unit_scale=True,
@@ -333,12 +383,19 @@ def main() -> None:
             for fmt, path in api_written_formats.items():
                 if fmt in SUPPORTED_ADDITIONAL_FORMATS and path.name not in written_files:
                     written_files.append(path.name)
-            tqdm.write(f"    OK -> {', '.join(written_files)}")
+            progress_write(f"    OK -> {', '.join(written_files)}")
 
         except Exception as exc:
-            tqdm.write(f"    ERROR on {audio_path.name}: {type(exc).__name__}: {exc}")
+            failed_files.append(audio_path)
+            progress_write(f"    ERROR on {audio_path.name}: {type(exc).__name__}: {exc}")
 
         time.sleep(max(args.sleep_seconds, 0.0))
+
+    if failed_files:
+        print(f"Failed {len(failed_files)} file(s):")
+        for failed_path in failed_files:
+            print(f"  - {failed_path}")
+        raise SystemExit(1)
 
     print("Done.")
 

@@ -1,9 +1,9 @@
-﻿import argparse
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ..core.srt_builder import (
     build_social_word_tokens,
@@ -311,14 +311,8 @@ def parse_args() -> Optional[argparse.Namespace]:
     return args
 
 
-def main() -> None:
-    args = parse_args()
-    if args is None:
-        return
-
-    base_path = args.path.resolve()
-
-    json_actions_enabled = (
+def has_json_actions(args: argparse.Namespace) -> bool:
+    return (
         args.create_srt
         or args.create_marker
         or args.create_txt
@@ -329,190 +323,268 @@ def main() -> None:
         or args.create_social_srt_raw
     )
 
+
+def load_json_payloads(json_files: List[Path]) -> Dict[Path, Dict]:
+    return {path: json.loads(path.read_text(encoding="utf-8")) for path in json_files}
+
+
+def output_payload(args: argparse.Namespace, path: Path, payloads: Dict[Path, Dict], cleaned_payloads: Dict[Path, Dict]) -> Dict:
+    return cleaned_payloads[path] if args.uzbek_clean else payloads[path]
+
+
+def normalize_output_text(text: str, args: argparse.Namespace) -> str:
+    value = text
+    if args.uzbek_clean:
+        value = clean_uzbek_text(value)
+    if args.script != "source":
+        value = normalize_script_text(value, args.script)
+    return value
+
+
+def standard_cues_for_payload(payload: Dict, args: argparse.Namespace):
+    words = payload.get("words") or []
+    tokens = build_standard_tokens(words, pause_detection=args.pause_detection)
+    return tokens_to_standard_cues(tokens)
+
+
+def sentence_items_for_payload(payload: Dict, args: argparse.Namespace) -> List[SentenceItem]:
+    sentences = payload_to_sentence_items(
+        payload,
+        use_timing_split=(args.uzbek_clean or args.pause_detection),
+        gap_split_seconds=args.sentence_gap_seconds,
+        hard_gap_split_seconds=args.sentence_hard_gap_seconds,
+        pause_detection=args.pause_detection,
+    )
+    remap = build_speaker_remap(payload.get("words") or [])
+    sentences = remap_sentence_items(sentences, remap)
+    if args.uzbek_clean or args.script != "source":
+        sentences = [
+            {"text": normalize_output_text(item.get("text") or "", args), "speaker": item.get("speaker")}
+            for item in sentences
+        ]
+    return sentences
+
+
+def run_create_clean_json(
+    args: argparse.Namespace,
+    json_files: List[Path],
+    payloads: Dict[Path, Dict],
+    cleaned_payloads: Dict[Path, Dict],
+) -> None:
+    clean_json_out_dir = (
+        ensure_dir(args.clean_json_out_dir.resolve(), "--clean-json-out-dir") if args.clean_json_out_dir else None
+    )
+    for path in json_files:
+        cleaned_payload = cleaned_payloads.get(path) or clean_uzbek_payload(payloads[path])
+        target_dir = clean_json_out_dir or path.parent
+        out_json = target_dir / f"{path.stem}_uz_clean.json"
+        out_json.write_text(json.dumps(cleaned_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Wrote {out_json}")
+
+
+def run_create_srt(
+    args: argparse.Namespace,
+    json_files: List[Path],
+    payloads: Dict[Path, Dict],
+    cleaned_payloads: Dict[Path, Dict],
+) -> None:
+    srt_transform = (
+        (lambda value: normalize_output_text(value, args)) if (args.uzbek_clean or args.script != "source") else None
+    )
+    total_cues = 0
+    for path in json_files:
+        srt_out_dir = output_dir_for(path, args.srt_out_dir, "--srt-out-dir")
+        payload = output_payload(args, path, payloads, cleaned_payloads)
+        cues = standard_cues_for_payload(payload, args)
+
+        out_srt = srt_out_dir / f"{path.stem}.srt"
+        write_srt(cues, out_srt, text_transform=srt_transform)
+        total_cues += len(cues)
+        print(f"Wrote {out_srt}")
+
+        if args.create_sentence_srt:
+            out_sentence_srt = sentence_srt_path(out_srt)
+            write_sentence_srt(cues, out_sentence_srt)
+            print(f"Wrote {out_sentence_srt}")
+
+    print(f"Standard SRT complete ({total_cues} subtitle cues)")
+
+
+def run_create_marker(
+    args: argparse.Namespace,
+    json_files: List[Path],
+    payloads: Dict[Path, Dict],
+    cleaned_payloads: Dict[Path, Dict],
+) -> None:
+    total_markers = 0
+    for path in json_files:
+        marker_out_dir = output_dir_for(path, args.marker_out_dir, "--marker-out-dir")
+        payload = output_payload(args, path, payloads, cleaned_payloads)
+        cues = standard_cues_for_payload(payload, args)
+
+        out_marker = marker_out_dir / f"{path.stem}.edl"
+        write_marker_edl(
+            cues,
+            out_marker,
+            title=path.stem,
+            fps=args.marker_fps,
+            color=args.marker_color,
+            marker_prefix=args.marker_prefix,
+        )
+        total_markers += len(cues)
+        print(f"Wrote {out_marker}")
+
+    print(f"Marker EDL complete ({total_markers} markers)")
+
+
+def run_create_txt(
+    args: argparse.Namespace,
+    json_files: List[Path],
+    payloads: Dict[Path, Dict],
+    cleaned_payloads: Dict[Path, Dict],
+) -> None:
+    total_sentences = 0
+    for path in json_files:
+        txt_out_dir = output_dir_for(path, args.txt_out_dir, "--txt-out-dir")
+        payload = output_payload(args, path, payloads, cleaned_payloads)
+        out_txt = txt_out_dir / f"{path.stem}.txt"
+
+        sentences = sentence_items_for_payload(payload, args)
+        if sentences:
+            write_sentences_txt(sentences, out_txt, main_speaker="", tag_all_speakers=False)
+            total_sentences += len(sentences)
+            print(f"Wrote {out_txt}")
+
+    print(f"TXT complete ({total_sentences} sentences)")
+
+
+def run_create_txt_combined(
+    args: argparse.Namespace,
+    base_path: Path,
+    json_files: List[Path],
+    payloads: Dict[Path, Dict],
+    cleaned_payloads: Dict[Path, Dict],
+) -> None:
+    if args.combined_txt_path is not None:
+        combined_out = args.combined_txt_path.resolve()
+        if combined_out.exists() and combined_out.is_dir():
+            raise ValueError("--combined-txt-path must be a file path, not a directory.")
+    else:
+        txt_out_dir = ensure_dir(
+            (args.txt_out_dir or source_root_dir(base_path, json_files)).resolve(),
+            "--txt-out-dir",
+        )
+        combined_out = txt_out_dir / infer_combined_txt_name(json_files)
+
+    combined_sentences: List[SentenceItem] = []
+    for path in json_files:
+        payload = output_payload(args, path, payloads, cleaned_payloads)
+        combined_sentences.extend(sentence_items_for_payload(payload, args))
+
+    write_sentences_txt(combined_sentences, combined_out, main_speaker="", tag_all_speakers=False)
+    print(f"Wrote {combined_out} ({len(combined_sentences)} sentences)")
+
+
+def compose_social_transform(
+    args: argparse.Namespace,
+    script_fn: Optional[Callable[[str], str]],
+) -> Optional[Callable[[str], str]]:
+    if not args.uzbek_clean and script_fn is None:
+        return None
+
+    def _transform(value: str) -> str:
+        text = clean_uzbek_text(value) if args.uzbek_clean else value
+        if script_fn is not None:
+            text = script_fn(text)
+        return text
+
+    return _transform
+
+
+def run_create_social_srt(
+    args: argparse.Namespace,
+    json_files: List[Path],
+    payloads: Dict[Path, Dict],
+    cleaned_payloads: Dict[Path, Dict],
+) -> None:
+    total_social = 0
+    for path in json_files:
+        social_out_dir = output_dir_for(path, args.social_out_dir, "--social-out-dir")
+        payload = output_payload(args, path, payloads, cleaned_payloads)
+        tokens = build_social_word_tokens(payload, pause_detection=args.pause_detection)
+        cues = tokens_to_social_cues(tokens)
+
+        if args.create_social_srt_cyrillic:
+            out_cyr = social_out_dir / f"{path.stem}_social_cyrillic.srt"
+            out_cyr.write_text(
+                cues_to_social_srt(cues, transform=compose_social_transform(args, to_cyrillic)),
+                encoding="utf-8",
+            )
+            print(f"Wrote {out_cyr}")
+
+        if args.create_social_srt_latin:
+            out_lat = social_out_dir / f"{path.stem}_social_latin.srt"
+            out_lat.write_text(
+                cues_to_social_srt(cues, transform=compose_social_transform(args, to_latin)),
+                encoding="utf-8",
+            )
+            print(f"Wrote {out_lat}")
+
+        if args.create_social_srt_raw:
+            out_raw = social_out_dir / f"{path.stem}_social_raw.srt"
+            out_raw.write_text(
+                cues_to_social_srt(cues, transform=compose_social_transform(args, None)),
+                encoding="utf-8",
+            )
+            print(f"Wrote {out_raw}")
+
+        total_social += len(cues)
+
+    print(f"Social SRT complete ({total_social} subtitle cues)")
+
+
+def run_convert_latin_srt(args: argparse.Namespace, base_path: Path) -> None:
+    latin_sources = collect_latin_srt_sources(base_path, args.latin_srt_glob)
+    latin_out_dir = ensure_dir(args.latin_cyr_out_dir.resolve(), "--latin-cyr-out-dir") if args.latin_cyr_out_dir else None
+
+    for latin_path in latin_sources:
+        target = cyrillic_output_path_for_latin(latin_path, out_dir=latin_out_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source_text = latin_path.read_text(encoding="utf-8")
+        target.write_text(latin_srt_to_cyrillic_text(source_text), encoding="utf-8")
+        print(f"Wrote {target} from {latin_path}")
+
+
+def main() -> None:
+    args = parse_args()
+    if args is None:
+        return
+
+    base_path = args.path.resolve()
     json_files: List[Path] = []
     payloads: Dict[Path, Dict] = {}
     cleaned_payloads: Dict[Path, Dict] = {}
 
-    if json_actions_enabled:
+    if has_json_actions(args):
         json_files = collect_json_sources(base_path, args.json_glob)
-        payloads = {path: json.loads(path.read_text(encoding="utf-8")) for path in json_files}
+        payloads = load_json_payloads(json_files)
         if args.uzbek_clean or args.create_clean_json:
             cleaned_payloads = {path: clean_uzbek_payload(payload) for path, payload in payloads.items()}
 
     if args.create_clean_json:
-        clean_json_out_dir = ensure_dir(args.clean_json_out_dir.resolve(), "--clean-json-out-dir") if args.clean_json_out_dir else None
-        for path in json_files:
-            cleaned_payload = cleaned_payloads.get(path) or clean_uzbek_payload(payloads[path])
-            target_dir = clean_json_out_dir or path.parent
-            out_json = target_dir / f"{path.stem}_uz_clean.json"
-            out_json.write_text(json.dumps(cleaned_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"Wrote {out_json}")
-
-    def normalize_output_text(text: str) -> str:
-        value = text
-        if args.uzbek_clean:
-            value = clean_uzbek_text(value)
-        if args.script != "source":
-            value = normalize_script_text(value, args.script)
-        return value
-
+        run_create_clean_json(args, json_files, payloads, cleaned_payloads)
     if args.create_srt:
-        srt_transform = normalize_output_text if (args.uzbek_clean or args.script != "source") else None
-        total_cues = 0
-        for path in json_files:
-            srt_out_dir = output_dir_for(path, args.srt_out_dir, "--srt-out-dir")
-            payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
-            words = payload.get("words") or []
-            tokens = build_standard_tokens(words, pause_detection=args.pause_detection)
-            cues = tokens_to_standard_cues(tokens)
-
-            out_srt = srt_out_dir / f"{path.stem}.srt"
-            write_srt(cues, out_srt, text_transform=srt_transform)
-            total_cues += len(cues)
-            print(f"Wrote {out_srt}")
-
-            if args.create_sentence_srt:
-                out_sentence_srt = sentence_srt_path(out_srt)
-                write_sentence_srt(cues, out_sentence_srt)
-                print(f"Wrote {out_sentence_srt}")
-
-        print(f"Standard SRT complete ({total_cues} subtitle cues)")
-
+        run_create_srt(args, json_files, payloads, cleaned_payloads)
     if args.create_marker:
-        total_markers = 0
-        for path in json_files:
-            marker_out_dir = output_dir_for(path, args.marker_out_dir, "--marker-out-dir")
-            payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
-            words = payload.get("words") or []
-            tokens = build_standard_tokens(words, pause_detection=args.pause_detection)
-            cues = tokens_to_standard_cues(tokens)
-
-            out_marker = marker_out_dir / f"{path.stem}.edl"
-            write_marker_edl(
-                cues,
-                out_marker,
-                title=path.stem,
-                fps=args.marker_fps,
-                color=args.marker_color,
-                marker_prefix=args.marker_prefix,
-            )
-            total_markers += len(cues)
-            print(f"Wrote {out_marker}")
-
-        print(f"Marker EDL complete ({total_markers} markers)")
-
+        run_create_marker(args, json_files, payloads, cleaned_payloads)
     if args.create_txt:
-        total_sentences = 0
-        for path in json_files:
-            txt_out_dir = output_dir_for(path, args.txt_out_dir, "--txt-out-dir")
-            payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
-            out_txt = txt_out_dir / f"{path.stem}.txt"
-
-            sentences = payload_to_sentence_items(
-                payload,
-                use_timing_split=(args.uzbek_clean or args.pause_detection),
-                gap_split_seconds=args.sentence_gap_seconds,
-                hard_gap_split_seconds=args.sentence_hard_gap_seconds,
-                pause_detection=args.pause_detection,
-            )
-            if sentences:
-                remap = build_speaker_remap(payload.get("words") or [])
-                sentences = remap_sentence_items(sentences, remap)
-                if args.uzbek_clean or args.script != "source":
-                    sentences = [
-                        {"text": normalize_output_text(item.get("text") or ""), "speaker": item.get("speaker")}
-                        for item in sentences
-                    ]
-                write_sentences_txt(sentences, out_txt, main_speaker="", tag_all_speakers=False)
-                total_sentences += len(sentences)
-                print(f"Wrote {out_txt}")
-
-        print(f"TXT complete ({total_sentences} sentences)")
-
+        run_create_txt(args, json_files, payloads, cleaned_payloads)
     if args.create_txt_combined:
-        if args.combined_txt_path is not None:
-            combined_out = args.combined_txt_path.resolve()
-            if combined_out.exists() and combined_out.is_dir():
-                raise ValueError("--combined-txt-path must be a file path, not a directory.")
-        else:
-            txt_out_dir = ensure_dir(
-                (args.txt_out_dir or source_root_dir(base_path, json_files)).resolve(),
-                "--txt-out-dir",
-            )
-            combined_out = txt_out_dir / infer_combined_txt_name(json_files)
-
-        combined_sentences: List[SentenceItem] = []
-        for path in json_files:
-            payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
-            sentences = payload_to_sentence_items(
-                payload,
-                use_timing_split=(args.uzbek_clean or args.pause_detection),
-                gap_split_seconds=args.sentence_gap_seconds,
-                hard_gap_split_seconds=args.sentence_hard_gap_seconds,
-                pause_detection=args.pause_detection,
-            )
-            remap = build_speaker_remap(payload.get("words") or [])
-            sentences = remap_sentence_items(sentences, remap)
-            if args.uzbek_clean or args.script != "source":
-                sentences = [
-                    {"text": normalize_output_text(item.get("text") or ""), "speaker": item.get("speaker")}
-                    for item in sentences
-                ]
-            combined_sentences.extend(sentences)
-
-        write_sentences_txt(combined_sentences, combined_out, main_speaker="", tag_all_speakers=False)
-        print(f"Wrote {combined_out} ({len(combined_sentences)} sentences)")
-
+        run_create_txt_combined(args, base_path, json_files, payloads, cleaned_payloads)
     if args.create_social_srt_latin or args.create_social_srt_cyrillic or args.create_social_srt_raw:
-        total_social = 0
-
-        def compose_social_transform(script_fn):
-            if not args.uzbek_clean and script_fn is None:
-                return None
-
-            def _transform(value: str) -> str:
-                text = clean_uzbek_text(value) if args.uzbek_clean else value
-                if script_fn is not None:
-                    text = script_fn(text)
-                return text
-
-            return _transform
-
-        for path in json_files:
-            social_out_dir = output_dir_for(path, args.social_out_dir, "--social-out-dir")
-            payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
-            tokens = build_social_word_tokens(payload, pause_detection=args.pause_detection)
-            cues = tokens_to_social_cues(tokens)
-
-            if args.create_social_srt_cyrillic:
-                out_cyr = social_out_dir / f"{path.stem}_social_cyrillic.srt"
-                out_cyr.write_text(cues_to_social_srt(cues, transform=compose_social_transform(to_cyrillic)), encoding="utf-8")
-                print(f"Wrote {out_cyr}")
-
-            if args.create_social_srt_latin:
-                out_lat = social_out_dir / f"{path.stem}_social_latin.srt"
-                out_lat.write_text(cues_to_social_srt(cues, transform=compose_social_transform(to_latin)), encoding="utf-8")
-                print(f"Wrote {out_lat}")
-
-            if args.create_social_srt_raw:
-                out_raw = social_out_dir / f"{path.stem}_social_raw.srt"
-                out_raw.write_text(cues_to_social_srt(cues, transform=compose_social_transform(None)), encoding="utf-8")
-                print(f"Wrote {out_raw}")
-
-            total_social += len(cues)
-
-        print(f"Social SRT complete ({total_social} subtitle cues)")
-
+        run_create_social_srt(args, json_files, payloads, cleaned_payloads)
     if args.convert_latin_srt_to_cyrillic:
-        latin_sources = collect_latin_srt_sources(base_path, args.latin_srt_glob)
-        latin_out_dir = ensure_dir(args.latin_cyr_out_dir.resolve(), "--latin-cyr-out-dir") if args.latin_cyr_out_dir else None
-
-        for latin_path in latin_sources:
-            target = cyrillic_output_path_for_latin(latin_path, out_dir=latin_out_dir)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source_text = latin_path.read_text(encoding="utf-8")
-            target.write_text(latin_srt_to_cyrillic_text(source_text), encoding="utf-8")
-            print(f"Wrote {target} from {latin_path}")
+        run_convert_latin_srt(args, base_path)
 
 
 if __name__ == "__main__":

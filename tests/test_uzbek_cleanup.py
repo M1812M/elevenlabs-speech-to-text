@@ -1,10 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from elevenlabs_toolkit.uzbek_cleanup import clean_uzbek_payload, clean_uzbek_text
 
@@ -44,4 +38,3 @@ class UzbekCleanupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
