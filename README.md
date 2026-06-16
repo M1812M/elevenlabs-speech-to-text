@@ -102,6 +102,7 @@ Behavior:
 - You must select at least one action:
   - `--create-srt`
   - `--create-sentence-srt`
+  - `--create-marker`
   - `--create-txt`
   - `--create-txt-combined`
   - `--create-clean-json`
@@ -119,12 +120,19 @@ Examples:
 
 ```powershell
 python .\scripts\transform.py --path .\media\JSON --create-srt --create-txt
+python .\scripts\transform.py --path .\media\JSON --create-marker
 python .\scripts\transform.py --path .\media\JSON --create-txt-combined
 python .\scripts\transform.py --path .\media\JSON --create-clean-json --uzbek-clean
 python .\scripts\transform.py --path .\media\JSON --create-social-srt-latin --create-social-srt-cyrillic
 python .\scripts\transform.py --path .\media\JSON-char --create-social-srt-latin --pause-detection
 python .\scripts\transform.py --path .\media\SRT-social --convert-latin-srt-to-cyrillic
 ```
+
+Marker EDL notes (`--create-marker`):
+- Creates one DaVinci Resolve-style EDL marker per standard subtitle cue.
+- Markers are placed at each cue start with a 1-frame duration, which mirrors `--create-sentence-srt` cue boundaries.
+- Default output folder is `media/MARKER`.
+- Use `--marker-fps` to match your Resolve timeline frame rate.
 
 Combined TXT naming (`--create-txt-combined`):
 - one source file -> `<basename>_comb.txt`

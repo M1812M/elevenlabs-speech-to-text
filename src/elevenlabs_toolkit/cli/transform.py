@@ -15,7 +15,7 @@ from ..core.srt_builder import (
     write_sentence_srt,
     write_srt,
 )
-from ..io_paths import SOCIAL_SRT_DIR, SRT_DIR, TXT_DIR
+from ..core.marker_builder import write_marker_edl
 from ..selectors import collect_json_sources, collect_latin_srt_sources
 from ..transcript_utils import (
     SentenceItem,
@@ -43,6 +43,16 @@ def ensure_dir(path: Path, arg_name: str) -> Path:
         raise ValueError(f"{arg_name} must be a directory: {path}")
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def output_dir_for(source_path: Path, explicit_out_dir: Optional[Path], arg_name: str) -> Path:
+    return ensure_dir((explicit_out_dir or source_path.parent).resolve(), arg_name)
+
+
+def source_root_dir(base_path: Path, sources: List[Path]) -> Path:
+    if base_path.exists():
+        return base_path if base_path.is_dir() else base_path.parent
+    return base_path.parent if base_path.parent != Path("") else sources[0].parent
 
 
 def infer_combined_txt_name(json_files: List[Path]) -> str:
@@ -73,6 +83,7 @@ def parse_args() -> Optional[argparse.Namespace]:
             "  python scripts/transform.py --path media/JSON --create-txt-combined\n"
             "  python scripts/transform.py --path media/JSON --create-clean-json --uzbek-clean\n"
             "  python scripts/transform.py --path media/JSON --create-social-srt-latin --create-social-srt-cyrillic\n"
+            "  python scripts/transform.py --path media/JSON --create-marker\n"
             "  python scripts/transform.py --path media/SRT-social --convert-latin-srt-to-cyrillic\n"
             "  python scripts/transform.py --path \"media/JSON/^2025-06.*Shock[.]json$\" --create-srt"
         ),
@@ -99,6 +110,11 @@ def parse_args() -> Optional[argparse.Namespace]:
         "--create-sentence-srt",
         action="store_true",
         help="Also create *.sentence.srt with cue numbers as visible text.",
+    )
+    parser.add_argument(
+        "--create-marker",
+        action="store_true",
+        help="Create Resolve-importable EDL marker files from standard subtitle cues.",
     )
     parser.add_argument("--create-txt", action="store_true", help="Create per-file TXT sentence outputs from JSON inputs.")
     parser.add_argument("--create-txt-combined", action="store_true", help="Create one combined TXT from all JSON inputs.")
@@ -166,30 +182,64 @@ def parse_args() -> Optional[argparse.Namespace]:
         help="Convert Latin SRT input(s) to Cyrillic while preserving timing and HTML tags.",
     )
 
-    parser.add_argument("--srt-out-dir", type=Path, default=SRT_DIR, help="Output directory for --create-srt.")
-    parser.add_argument("--txt-out-dir", type=Path, default=TXT_DIR, help="Output directory for TXT outputs.")
+    parser.add_argument(
+        "--srt-out-dir",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Output directory for --create-srt. Default: next to each source JSON file.",
+    )
+    parser.add_argument(
+        "--txt-out-dir",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Output directory for TXT outputs. Default: next to source JSON files.",
+    )
     parser.add_argument(
         "--social-out-dir",
         type=Path,
-        default=SOCIAL_SRT_DIR,
-        help="Output directory for social SRT outputs.",
+        default=argparse.SUPPRESS,
+        help="Output directory for social SRT outputs. Default: next to each source JSON file.",
+    )
+    parser.add_argument(
+        "--marker-out-dir",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Output directory for --create-marker. Default: next to each source JSON file.",
+    )
+    parser.add_argument(
+        "--marker-fps",
+        type=int,
+        default=25,
+        help="Frames per second for Resolve EDL marker timecode.",
+    )
+    parser.add_argument(
+        "--marker-color",
+        type=str,
+        default="ResolveColorBlue",
+        help="Resolve marker color token written into the EDL.",
+    )
+    parser.add_argument(
+        "--marker-prefix",
+        type=str,
+        default="Sentence",
+        help="Prefix used for generated marker labels. Use empty string for bare numbers.",
     )
     parser.add_argument(
         "--latin-cyr-out-dir",
         type=Path,
-        default=None,
+        default=argparse.SUPPRESS,
         help="Optional output directory for --convert-latin-srt-to-cyrillic. Default: next to source file.",
     )
     parser.add_argument(
         "--clean-json-out-dir",
         type=Path,
-        default=None,
+        default=argparse.SUPPRESS,
         help="Optional output directory for --create-clean-json. Default: next to each source JSON file.",
     )
     parser.add_argument(
         "--combined-txt-path",
         type=Path,
-        default=None,
+        default=argparse.SUPPRESS,
         help="Explicit output path for --create-txt-combined. Default is inferred from source name(s).",
     )
 
@@ -198,10 +248,22 @@ def parse_args() -> Optional[argparse.Namespace]:
         return None
 
     args = parser.parse_args()
+    for out_arg in (
+        "srt_out_dir",
+        "txt_out_dir",
+        "social_out_dir",
+        "marker_out_dir",
+        "latin_cyr_out_dir",
+        "clean_json_out_dir",
+        "combined_txt_path",
+    ):
+        if not hasattr(args, out_arg):
+            setattr(args, out_arg, None)
 
     selected_actions = [
         args.create_srt,
         args.create_sentence_srt,
+        args.create_marker,
         args.create_txt,
         args.create_txt_combined,
         args.create_clean_json,
@@ -213,7 +275,7 @@ def parse_args() -> Optional[argparse.Namespace]:
     if not any(selected_actions):
         parser.error(
             "Select at least one action: --create-srt, --create-txt, --create-txt-combined, --create-clean-json, "
-            "--create-social-srt-latin, --create-social-srt-cyrillic, --create-social-srt-raw, "
+            "--create-social-srt-latin, --create-social-srt-cyrillic, --create-social-srt-raw, --create-marker, "
             "or --convert-latin-srt-to-cyrillic."
         )
 
@@ -225,6 +287,7 @@ def parse_args() -> Optional[argparse.Namespace]:
 
     if args.path.is_file() and args.convert_latin_srt_to_cyrillic and (
         args.create_srt
+        or args.create_marker
         or args.create_txt
         or args.create_txt_combined
         or args.create_clean_json
@@ -242,6 +305,8 @@ def parse_args() -> Optional[argparse.Namespace]:
         parser.error("--sentence-hard-gap-seconds must be > 0.")
     if args.sentence_hard_gap_seconds < args.sentence_gap_seconds:
         parser.error("--sentence-hard-gap-seconds must be >= --sentence-gap-seconds.")
+    if args.marker_fps <= 0:
+        parser.error("--marker-fps must be > 0.")
 
     return args
 
@@ -255,6 +320,7 @@ def main() -> None:
 
     json_actions_enabled = (
         args.create_srt
+        or args.create_marker
         or args.create_txt
         or args.create_txt_combined
         or args.create_clean_json
@@ -291,10 +357,10 @@ def main() -> None:
         return value
 
     if args.create_srt:
-        srt_out_dir = ensure_dir(args.srt_out_dir.resolve(), "--srt-out-dir")
         srt_transform = normalize_output_text if (args.uzbek_clean or args.script != "source") else None
         total_cues = 0
         for path in json_files:
+            srt_out_dir = output_dir_for(path, args.srt_out_dir, "--srt-out-dir")
             payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
             words = payload.get("words") or []
             tokens = build_standard_tokens(words, pause_detection=args.pause_detection)
@@ -312,10 +378,33 @@ def main() -> None:
 
         print(f"Standard SRT complete ({total_cues} subtitle cues)")
 
+    if args.create_marker:
+        total_markers = 0
+        for path in json_files:
+            marker_out_dir = output_dir_for(path, args.marker_out_dir, "--marker-out-dir")
+            payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
+            words = payload.get("words") or []
+            tokens = build_standard_tokens(words, pause_detection=args.pause_detection)
+            cues = tokens_to_standard_cues(tokens)
+
+            out_marker = marker_out_dir / f"{path.stem}.edl"
+            write_marker_edl(
+                cues,
+                out_marker,
+                title=path.stem,
+                fps=args.marker_fps,
+                color=args.marker_color,
+                marker_prefix=args.marker_prefix,
+            )
+            total_markers += len(cues)
+            print(f"Wrote {out_marker}")
+
+        print(f"Marker EDL complete ({total_markers} markers)")
+
     if args.create_txt:
-        txt_out_dir = ensure_dir(args.txt_out_dir.resolve(), "--txt-out-dir")
         total_sentences = 0
         for path in json_files:
+            txt_out_dir = output_dir_for(path, args.txt_out_dir, "--txt-out-dir")
             payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
             out_txt = txt_out_dir / f"{path.stem}.txt"
 
@@ -341,12 +430,15 @@ def main() -> None:
         print(f"TXT complete ({total_sentences} sentences)")
 
     if args.create_txt_combined:
-        txt_out_dir = ensure_dir(args.txt_out_dir.resolve(), "--txt-out-dir")
         if args.combined_txt_path is not None:
             combined_out = args.combined_txt_path.resolve()
             if combined_out.exists() and combined_out.is_dir():
                 raise ValueError("--combined-txt-path must be a file path, not a directory.")
         else:
+            txt_out_dir = ensure_dir(
+                (args.txt_out_dir or source_root_dir(base_path, json_files)).resolve(),
+                "--txt-out-dir",
+            )
             combined_out = txt_out_dir / infer_combined_txt_name(json_files)
 
         combined_sentences: List[SentenceItem] = []
@@ -372,7 +464,6 @@ def main() -> None:
         print(f"Wrote {combined_out} ({len(combined_sentences)} sentences)")
 
     if args.create_social_srt_latin or args.create_social_srt_cyrillic or args.create_social_srt_raw:
-        social_out_dir = ensure_dir(args.social_out_dir.resolve(), "--social-out-dir")
         total_social = 0
 
         def compose_social_transform(script_fn):
@@ -388,6 +479,7 @@ def main() -> None:
             return _transform
 
         for path in json_files:
+            social_out_dir = output_dir_for(path, args.social_out_dir, "--social-out-dir")
             payload = cleaned_payloads[path] if args.uzbek_clean else payloads[path]
             tokens = build_social_word_tokens(payload, pause_detection=args.pause_detection)
             cues = tokens_to_social_cues(tokens)
