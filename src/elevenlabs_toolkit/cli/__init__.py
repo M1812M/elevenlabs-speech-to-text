@@ -1,1 +1,1 @@
-﻿"""CLI entrypoints for the toolkit."""
+"""CLI entrypoints for the toolkit."""

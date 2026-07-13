@@ -1,404 +1,177 @@
+from __future__ import annotations
+
 import argparse
-import json
-import sys
-import time
+import math
 from pathlib import Path
-from typing import Optional
 
-from elevenlabs_toolkit.io_paths import MEDIA_DIR
-
-from ..core.srt_builder import words_to_basic_srt
-from ..core.stt_client import (
-    DEFAULT_INCLUDE_SPEAKERS,
-    DEFAULT_INCLUDE_TIMESTAMPS,
-    DEFAULT_SLEEP_SECONDS,
-    DEFAULT_TIMESTAMPS_GRANULARITY,
-    MODEL_ID,
-    SUPPORTED_ADDITIONAL_FORMATS,
-    SUPPORTED_LANGUAGE_CODES_HELP,
-    TqdmFileWrapper,
-    build_additional_format_options,
-    guess_mime,
-    load_api_key,
-    normalize_additional_formats,
-    to_payload,
-    write_api_additional_formats,
+from ..application import execute_transcription, plan_transcription
+from ..config import effective_config, profile_options
+from ..files import AUDIO_VIDEO_SUFFIXES, discover_inputs
+from ..models import (
+    ArtifactFormat,
+    ConflictPolicy,
+    ExportOptions,
+    ScriptMode,
+    SpeakerLabels,
+    TranscriptionOptions,
 )
-from ..selectors import collect_audio_files
-from ..transcript_utils import (
-    build_speaker_remap,
-    payload_to_sentence_items,
-    remap_sentence_items,
-    write_sentences_txt,
+from ..providers import ElevenLabsProvider
+from .common import add_execution_arguments, add_input_arguments, input_spec
+from .context import CliContext
+
+LOCAL_FORMATS = (
+    ArtifactFormat.JSON,
+    ArtifactFormat.SRT,
+    ArtifactFormat.TXT,
+    ArtifactFormat.SOCIAL_SRT,
+    ArtifactFormat.RESOLVE_EDL,
+    ArtifactFormat.CUE_INDEX_SRT,
 )
+REMOTE_FORMATS = ("pdf", "docx", "html", "segmented-json")
 
 
-class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
-    pass
+def configure_parser(parser: argparse.ArgumentParser) -> None:
+    add_input_arguments(parser, label="MEDIA")
+    parser.add_argument(
+        "-o", "--output-dir", type=Path, default=Path("artifacts"), help="Output/cache root (default: ./artifacts)."
+    )
+    parser.add_argument("--format", action="append", choices=[item.value for item in LOCAL_FORMATS], dest="formats")
+    parser.add_argument("--remote-format", action="append", choices=REMOTE_FORMATS, default=[])
+    parser.add_argument("--profile")
+    parser.add_argument("--script", choices=[item.value for item in ScriptMode])
+    parser.add_argument("--clean", choices=["none", "uzbek"])
+    parser.add_argument("--speaker-labels", choices=[item.value for item in SpeakerLabels])
+    parser.add_argument("--replace", action="append", default=None, metavar="TOKEN=TOKEN")
 
-
-class PlainProgress:
-    def __init__(self, *args, **kwargs):
-        self.iterable = args[0] if args else None
-
-    def __iter__(self):
-        return iter(self.iterable or [])
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, _exc_type, _exc, _traceback):
-        return False
-
-    def update(self, _amount: int) -> None:
-        pass
-
-
-def progress(*args, **kwargs):
-    try:
-        from tqdm import tqdm
-    except ImportError:
-        return PlainProgress(*args, **kwargs)
-    return tqdm(*args, **kwargs)
-
-
-def progress_write(message: str) -> None:
-    try:
-        from tqdm import tqdm
-    except ImportError:
-        print(message)
-    else:
-        tqdm.write(message)
-
-
-def create_elevenlabs_client(api_key: str):
-    try:
-        from elevenlabs.client import ElevenLabs
-    except ImportError:
-        print(
-            "Missing Python package 'elevenlabs'. Install this project's dependencies with:\n"
-            "  python -m pip install -e .\n"
-            "or install the SDK directly with:\n"
-            "  python -m pip install elevenlabs",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
-    return ElevenLabs(api_key=api_key)
-
-
-def prompt_yes_no(prompt: str, default: bool = False) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    while True:
-        answer = input(f"{prompt} {suffix}: ").strip().lower()
-        if not answer:
-            return default
-        if answer in {"y", "yes"}:
-            return True
-        if answer in {"n", "no"}:
-            return False
-        print("Please answer yes or no.")
-
-
-def interactive_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
-    print("No arguments provided. Starting interactive mode.")
-    print("This tool uploads a file/folder to ElevenLabs and writes JSON outputs.")
-
-    while True:
-        input_path_raw = input("Input path (audio file or folder): ").strip().strip('"')
-        if not input_path_raw:
-            print("Input path is required.")
-            continue
-        input_path = Path(input_path_raw)
-        if input_path.exists():
-            break
-        print(f"Path not found: {input_path}")
-
-    json_default = MEDIA_DIR.resolve()
-    while True:
-        json_out_raw = input(f"JSON output folder [{json_default}]: ").strip().strip('"')
-        json_out_dir = Path(json_out_raw) if json_out_raw else json_default
-        if json_out_dir.exists() and not json_out_dir.is_dir():
-            print(f"Output path exists but is not a directory: {json_out_dir}")
-            continue
-        break
-
-    create_srt = prompt_yes_no("Create local SRT files", default=True)
-    create_txt = prompt_yes_no("Create local TXT files", default=True)
-    language_code = input("Forced language code (empty = auto-detect): ").strip() or None
-
-    return parser.parse_args(
-        [
-            "--path",
-            str(input_path),
-            "--json-out-dir",
-            str(json_out_dir),
-            *(["--create-srt"] if create_srt else []),
-            *(["--create-txt"] if create_txt else []),
-            *(["--language-code", language_code] if language_code else []),
-        ]
+    parser.add_argument("--model", default="scribe_v2")
+    parser.add_argument("--language-code")
+    parser.add_argument("--timestamps", choices=["none", "word", "character"])
+    parser.add_argument("--diarize", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--audio-events", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--num-speakers", type=int)
+    parser.add_argument("--keyterm", action="append", default=[])
+    parser.add_argument(
+        "--no-verbatim", action="store_true", help="Ask the provider to remove fillers and false starts."
+    )
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument(
+        "--env-file", type=Path, help="Explicit dotenv file; no implicit package/CWD search is performed."
     )
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Transcribe recordings with ElevenLabs.\n"
-            "Input can be a single audio/video file or a directory with supported files."
-        ),
-        formatter_class=HelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  python scripts/transcribe.py --path media/REC --create-srt --create-txt\n"
-            "  python scripts/transcribe.py --path media/REC/sample.mp3 --language-code deu\n"
-            "  python scripts/transcribe.py --path media/REC --api-formats srt txt\n"
-            "  python scripts/transcribe.py --path \"media/REC/^PTT-.*[.]mp3$\" --json-out-dir media/JSON"
-        ),
+    parser.add_argument("--pause-detection", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--force-transcribe", action="store_true", help="Ignore cached transcripts and replace planned outputs."
     )
     parser.add_argument(
-        "--path",
-        type=Path,
-        default=None,
-        help=(
-            "Input path. Accepts one audio/video file, a directory, or a path expression. "
-            "If the exact path does not exist but its parent directory exists, the last segment is treated as regex."
-        ),
+        "--retries",
+        type=int,
+        default=0,
+        help="Additional transient-error attempts; each may incur another provider charge (default: 0).",
     )
+    parser.add_argument("--retry-backoff", type=float, default=1.0)
+    parser.add_argument("--request-delay", type=float, default=0.0)
     parser.add_argument(
-        "--json-out-dir",
-        type=Path,
-        default=MEDIA_DIR,
-        help="Directory where JSON transcripts are written.",
-    )
-    parser.add_argument(
-        "--create-srt",
-        action="store_true",
-        help="Create local SRT files from transcript words.",
-    )
-    parser.add_argument(
-        "--create-txt",
-        action="store_true",
-        help="Create local TXT files with sentence lines.",
-    )
-    parser.add_argument(
-        "--srt-out-dir",
-        type=Path,
-        default=None,
-        help="Output directory for local SRT files. Defaults to --json-out-dir.",
-    )
-    parser.add_argument(
-        "--txt-out-dir",
-        type=Path,
-        default=None,
-        help="Output directory for local TXT files. Defaults to --json-out-dir.",
-    )
-    parser.add_argument(
-        "--timestamps-granularity",
-        choices=["none", "word", "character"],
-        default=DEFAULT_TIMESTAMPS_GRANULARITY,
-        help="Timestamp detail in ElevenLabs JSON output.",
-    )
-    parser.add_argument(
-        "--language-code",
-        default=None,
-        metavar="CODE",
-        help=(
-            "Optional ISO 639-3 language code for forced transcription language. "
-            "If omitted, ElevenLabs auto-detects language. "
-            f"{SUPPORTED_LANGUAGE_CODES_HELP}"
-        ),
-    )
-    parser.add_argument(
-        "--api-formats",
-        nargs="*",
-        default=[],
-        metavar="FORMAT",
-        help="Optional ElevenLabs server-generated formats (srt, txt, segmented_json, pdf, html, docx).",
-    )
-    parser.add_argument(
-        "--include-speakers",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULT_INCLUDE_SPEAKERS,
-        help="Include speaker labels in API additional formats.",
-    )
-    parser.add_argument(
-        "--include-timestamps",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULT_INCLUDE_TIMESTAMPS,
-        help="Include timestamps in API additional formats.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite output files if they already exist.",
-    )
-    parser.add_argument(
-        "--sleep-seconds",
+        "--lock-timeout",
         type=float,
-        default=DEFAULT_SLEEP_SECONDS,
-        help="Delay between requests to ElevenLabs API.",
+        default=300.0,
+        help="Seconds to wait for another process publishing the same cache (default: 300).",
     )
-    parser.add_argument(
-        "--pause-detection",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help=(
-            "Experimental: detect possible pauses from stretched character timings when available. "
-            "Works best with --timestamps-granularity character for locally generated outputs."
-        ),
+    add_execution_arguments(
+        parser,
+        default_policy="error",
+        allowed_policies=(ConflictPolicy.ERROR, ConflictPolicy.SKIP, ConflictPolicy.REPLACE),
     )
-
-    if len(sys.argv) == 1:
-        return interactive_args(parser)
-
-    args = parser.parse_args()
-    if args.path is None:
-        parser.error("--path is required unless you run with no arguments (interactive mode).")
-
-    args.api_formats = normalize_additional_formats(args.api_formats)
-    invalid_formats = [fmt for fmt in args.api_formats if fmt not in SUPPORTED_ADDITIONAL_FORMATS]
-    if invalid_formats:
-        parser.error(
-            f"Unsupported --api-formats value(s): {invalid_formats}. "
-            f"Supported: {sorted(SUPPORTED_ADDITIONAL_FORMATS)}"
-        )
-    return args
+    parser.set_defaults(handler=run)
 
 
-def ensure_dir(path: Path, arg_name: str) -> Path:
-    if path.exists() and not path.is_dir():
-        raise ValueError(f"{arg_name} must be a directory: {path}")
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, ExportOptions, tuple[ArtifactFormat, ...]]:
+    formats = tuple(ArtifactFormat(item) for item in (args.formats or [ArtifactFormat.JSON.value]))
+    timed_formats = {
+        ArtifactFormat.SRT,
+        ArtifactFormat.SOCIAL_SRT,
+        ArtifactFormat.RESOLVE_EDL,
+        ArtifactFormat.CUE_INDEX_SRT,
+    }
+    overrides: dict[str, object] = {}
+    if args.script is not None:
+        overrides["text.script"] = args.script
+    if args.clean is not None:
+        overrides["text.cleanup"] = None if args.clean == "none" else args.clean
+    if args.speaker_labels is not None:
+        overrides["text.speaker_labels"] = args.speaker_labels
+    if args.replace is not None:
+        overrides["text.replacements"] = args.replace
+    if args.pause_detection is not None:
+        overrides["segmentation.pause_detection"] = args.pause_detection
+    config = effective_config(args.profile, overrides=overrides, cwd=Path.cwd())
+    segmentation, text = profile_options(config["profile"], config)
+    timestamps = args.timestamps or ("character" if segmentation.pause_detection else "word")
+    if timestamps == "none" and any(item in timed_formats for item in formats):
+        raise ValueError("timed local formats require --timestamps word or character")
+    if segmentation.pause_detection and timestamps != "character":
+        raise ValueError("pause detection requires --timestamps character")
+    pacing = {
+        "retry backoff": args.retry_backoff,
+        "request delay": args.request_delay,
+        "lock timeout": args.lock_timeout,
+    }
+    if args.retries < 0:
+        raise ValueError("retries must be >= 0")
+    for label, value in pacing.items():
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{label} must be a finite number >= 0")
 
-
-def main() -> None:
-    args = parse_args()
-    api_key = load_api_key()
-
-    input_path = args.path.resolve()
-    json_out_dir = ensure_dir(args.json_out_dir.resolve(), "--json-out-dir")
-    srt_out_dir = ensure_dir((args.srt_out_dir or json_out_dir).resolve(), "--srt-out-dir") if args.create_srt else None
-    txt_out_dir = ensure_dir((args.txt_out_dir or json_out_dir).resolve(), "--txt-out-dir") if args.create_txt else None
-
-    audio_files = collect_audio_files(input_path)
-    additional_format_options = build_additional_format_options(
-        args.api_formats,
-        args.include_speakers,
-        args.include_timestamps,
+    transcription = TranscriptionOptions(
+        model_id=args.model,
+        language_code=args.language_code,
+        timestamps_granularity=timestamps,
+        diarize=args.diarize,
+        tag_audio_events=args.audio_events,
+        num_speakers=args.num_speakers,
+        keyterms=tuple(args.keyterm),
+        no_verbatim=args.no_verbatim,
+        seed=args.seed,
+        temperature=args.temperature,
+        remote_formats=tuple(args.remote_format),
     )
+    export = ExportOptions(formats, args.output_dir, segmentation, text)
+    return transcription, export, formats
 
-    client = create_elevenlabs_client(api_key)
 
-    print(f"Python: {sys.executable}")
-    print(f"Found {len(audio_files)} file(s) from: {input_path}")
-    print(
-        "Options: "
-        f"language_code={args.language_code or 'auto'}, "
-        f"timestamps_granularity={args.timestamps_granularity}, "
-        f"create_srt={args.create_srt}, "
-        f"create_txt={args.create_txt}, "
-        f"pause_detection={args.pause_detection}, "
-        f"api_formats={args.api_formats or []}"
+def run(args: argparse.Namespace, context: CliContext) -> int:
+    sources = discover_inputs(input_spec(args), set(AUDIO_VIDEO_SUFFIXES), exclude_generated=False)
+    transcription, export, formats = _build_options(args)
+    policy = ConflictPolicy.REPLACE if args.force_transcribe else ConflictPolicy(args.on_conflict)
+    resume = args.resume and not args.force_transcribe
+    plan = plan_transcription(
+        sources,
+        args.output_dir,
+        tuple(item for item in formats if item is not ArtifactFormat.JSON),
+        policy=policy,
+        resume=resume,
+        dry_run=args.dry_run,
+        transcription_options=transcription,
     )
+    if args.dry_run or not plan.valid:
+        context.emit_plan(plan, max_api_attempts=plan.api_requests * (args.retries + 1))
+        return 0 if plan.valid else 1
 
-    failed_files = []
-
-    for idx, audio_path in enumerate(progress(audio_files, desc="Transcribing", unit="file"), start=1):
-        stem = audio_path.stem
-        out_json = json_out_dir / f"{stem}.json"
-        out_srt = (srt_out_dir / f"{stem}.srt") if srt_out_dir else None
-        out_txt = (txt_out_dir / f"{stem}.txt") if txt_out_dir else None
-
-        expected = [out_json]
-        if out_srt is not None:
-            expected.append(out_srt)
-        if out_txt is not None:
-            expected.append(out_txt)
-
-        if (not args.overwrite) and expected and all(path.exists() for path in expected):
-            progress_write(f"[{idx}/{len(audio_files)}] SKIP (exists): {audio_path.name}")
-            continue
-
-        mime = guess_mime(audio_path)
-        progress_write(f"[{idx}/{len(audio_files)}] Transcribing: {audio_path.name} (mime={mime})")
-
-        try:
-            filesize = audio_path.stat().st_size
-            convert_kwargs = {
-                "model_id": MODEL_ID,
-                "diarize": True,
-                "tag_audio_events": True,
-                "timestamps_granularity": args.timestamps_granularity,
-            }
-            if args.language_code:
-                convert_kwargs["language_code"] = args.language_code
-            if additional_format_options:
-                convert_kwargs["additional_formats"] = additional_format_options
-
-            with audio_path.open("rb") as file_obj, progress(
-                total=filesize,
-                unit="B",
-                unit_scale=True,
-                desc=audio_path.name,
-                leave=False,
-            ) as pbar:
-                wrapped = TqdmFileWrapper(file_obj, pbar)
-                result = client.speech_to_text.convert(file=wrapped, **convert_kwargs)
-
-            payload = to_payload(result)
-            out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            api_written_formats = write_api_additional_formats(
-                payload,
-                stem,
-                json_out_dir,
-                srt_out_dir,
-                txt_out_dir,
-            )
-
-            if out_srt is not None and "srt" not in api_written_formats:
-                words = payload.get("words") or [
-                    {"type": "word", "start": segment["start"], "end": segment["end"], "text": segment["text"]}
-                    for segment in payload.get("segments", [])
-                ]
-                out_srt.write_text(words_to_basic_srt(words, pause_detection=args.pause_detection), encoding="utf-8")
-
-            if out_txt is not None and "txt" not in api_written_formats:
-                sentence_items = payload_to_sentence_items(
-                    payload,
-                    use_timing_split=args.pause_detection,
-                    pause_detection=args.pause_detection,
-                )
-                if sentence_items:
-                    remap = build_speaker_remap(payload.get("words") or [])
-                    sentence_items = remap_sentence_items(sentence_items, remap)
-                    write_sentences_txt(sentence_items, out_txt, main_speaker="", tag_all_speakers=False)
-
-            written_files = [out_json.name]
-            if out_srt is not None and out_srt.exists():
-                written_files.append(out_srt.name)
-            if out_txt is not None and out_txt.exists():
-                written_files.append(out_txt.name)
-            for fmt, path in api_written_formats.items():
-                if fmt in SUPPORTED_ADDITIONAL_FORMATS and path.name not in written_files:
-                    written_files.append(path.name)
-            progress_write(f"    OK -> {', '.join(written_files)}")
-
-        except Exception as exc:
-            failed_files.append(audio_path)
-            progress_write(f"    ERROR on {audio_path.name}: {type(exc).__name__}: {exc}")
-
-        time.sleep(max(args.sleep_seconds, 0.0))
-
-    if failed_files:
-        print(f"Failed {len(failed_files)} file(s):")
-        for failed_path in failed_files:
-            print(f"  - {failed_path}")
-        raise SystemExit(1)
-
-    print("Done.")
-
-
-if __name__ == "__main__":
-    main()
+    provider = ElevenLabsProvider(env_file=args.env_file) if plan.api_requests else None
+    result = execute_transcription(
+        plan,
+        transcription,
+        export,
+        provider=provider,
+        policy=policy,
+        resume=resume,
+        retries=args.retries,
+        backoff_seconds=args.retry_backoff,
+        request_delay=args.request_delay,
+        lock_timeout_seconds=args.lock_timeout,
+        fail_fast=args.fail_fast,
+        progress=context.log,
+    )
+    context.emit_result(result)
+    return result.exit_code

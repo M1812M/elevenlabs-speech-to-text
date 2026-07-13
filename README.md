@@ -1,146 +1,335 @@
-﻿# ElevenLabs Subtitle Toolkit
+# ElevenLabs Toolkit
 
-This project uses a `src/` layout with reusable core modules and thin CLI wrappers.
+An alpha-stage, CLI-first post-production toolkit for transcribing media and
+turning transcript JSON into subtitles, text, and DaVinci Resolve artifacts.
+ElevenLabs is isolated behind a provider adapter; inspection, export, Uzbek
+cleanup, and transliteration work locally without the ElevenLabs SDK.
 
-## Structure
+The project is intentionally free to make breaking changes while its workflows
+and data model settle.
 
-```text
-project/
-  pyproject.toml
-  README.md
-  .env.example
+## Installation
 
-  src/
-    elevenlabs_toolkit/
-      __init__.py
-      cli/
-        transcribe.py
-        transform.py
-      core/
-        marker_builder.py
-        stt_client.py
-        srt_builder.py
-      translit.py
-      uzbek_cleanup.py
-      io_paths.py
-      selectors.py
-      timecode.py
-      transcript_utils.py
-
-  scripts/
-    transcribe.py
-    transform.py
-
-  tests/
-    test_cli_uzbek_clean_flow.py
-    test_html_conversion_flow.py
-    test_translit.py
-    test_srt_split.py
-    test_path_selectors.py
-    test_timing_sentence_split.py
-    test_uzbek_cleanup.py
-```
-
-## Requirements
-
-- Python 3.10+
-- `elevenlabs`
-- `tqdm`
-- Optional: `python-dotenv`
+Python 3.10 or newer is required. Create and activate a virtual environment,
+then choose the smallest useful installation:
 
 ```powershell
-pip install -e .
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# Offline commands: export, inspect, clean, transliterate, and config
+python -m pip install -e .
+
+# Also install the ElevenLabs SDK for transcription
+python -m pip install -e ".[stt]"
+
+# Transcription plus test and build tools
+python -m pip install -e ".[stt,dev]"
 ```
 
-or:
+The canonical executable is `elevenlabs-toolkit`. Run
+`elevenlabs-toolkit --help` or `elevenlabs-toolkit COMMAND --help` for the full
+option set. `python -m elevenlabs_toolkit` is equivalent.
+
+## Credentials
+
+Only `transcribe` needs an API key. Set it in the process environment:
 
 ```powershell
-pip install elevenlabs tqdm python-dotenv
+$env:ELEVENLABS_API_KEY = "your-key"
+elevenlabs-toolkit transcribe .\media\clip.wav
 ```
 
-## Environment Setup
+Or pass a dotenv file explicitly:
 
 ```powershell
 Copy-Item .\.env.example .\.env
+elevenlabs-toolkit transcribe .\media --env-file .\.env
 ```
 
-```env
-ELEVENLABS_API_KEY=your_key_here
-```
+The toolkit does not search the package directory or current directory for a
+dotenv file. If both are supplied, `ELEVENLABS_API_KEY` from the environment
+takes precedence over the explicit file. Keep credentials out of toolkit TOML
+configuration and version control.
 
-## 1) Transcribe With ElevenLabs
+## Core workflows
+
+Inputs are positional files or directories. For directories, use `--glob` or
+`--regex` to select names and `--recursive` to descend into subdirectories.
+Selection is explicit: a nonexistent path is an error, not an inferred regex.
+Transcription source stems must also be portable output names; unsafe Windows
+device names, path punctuation, control characters, and trailing dots or spaces
+are rejected during planning before any upload.
+
+### Transcribe media
+
+The default output root is `artifacts`, and the default requested local format is
+the canonical provider JSON. A cache manifest is always maintained alongside
+it.
 
 ```powershell
-python .\scripts\transcribe.py --help
-# or, after `pip install -e .`
-elevenlabs-transcribe --help
+# JSON transcript and manifest
+elevenlabs-toolkit transcribe .\media\clip.wav --env-file .\.env
+
+# Batch transcript plus locally rendered subtitles and text
+elevenlabs-toolkit transcribe .\media -o .\artifacts --recursive `
+  --glob "*.wav" --format json --format srt --format txt --env-file .\.env
+
+# Request provider-generated formats as well
+elevenlabs-toolkit transcribe .\media\interview.mp3 `
+  --remote-format pdf --remote-format docx --env-file .\.env
 ```
 
-Behavior:
-- If no arguments are passed, it starts interactive prompts.
-- `--path` accepts one file, one folder, or a regex path expression.
-- `--json-out-dir` defaults to `media/JSON`.
-- Optional extras: `--create-srt`, `--create-txt`, `--language-code`, `--api-formats`.
-- `--pause-detection` enables experimental pause detection from stretched character timings for locally generated outputs.
+Provider options include language, word or character timestamps, diarization,
+speaker count, keyterms, audio-event tagging, no-verbatim mode, explicit
+retries, and request pacing. Automatic retries default to zero because a retry
+may incur another provider charge. `--dry-run` reports both planned requests
+and the maximum attempt count after `--retries`.
 
-Examples:
+`no-verbatim` is limited to `scribe_v2`. Keyterms are validated locally against
+the provider limits before upload; ElevenLabs currently applies a surcharge to
+keyterm-enabled transcription. Timed exports require word or character
+timestamps, and pause detection requires character timestamps. The synchronous
+CLI deliberately does not expose webhook mode, which returns before a
+transcript is available, or separate multichannel response shapes.
+
+### Export transcript JSON
+
+`export` is offline and defaults to SRT. Repeat `--format` to create several
+artifacts from one validated transcript.
 
 ```powershell
-python .\scripts\transcribe.py
-python .\scripts\transcribe.py --path .\media\REC --create-srt --create-txt
-python .\scripts\transcribe.py --path .\media\REC\sample.mp3 --language-code deu
-python .\scripts\transcribe.py --path .\media\REC --json-out-dir .\media\JSON-char --timestamps-granularity character --pause-detection
-python .\scripts\transcribe.py --path .\media\REC --json-out-dir .\media\JSON-override
+elevenlabs-toolkit export .\artifacts -o .\exports `
+  --format srt --format txt --format resolve-edl
+
+elevenlabs-toolkit export .\artifacts -o .\exports `
+  --profile social --format social-srt
+
+elevenlabs-toolkit export .\artifacts -o .\exports `
+  --format combined-txt --combined-name production.txt
 ```
 
-## 2) Transform Existing JSON/SRT
+Available export formats are `srt`, `txt`, `combined-txt`, `social-srt`,
+`resolve-edl`, `cue-index-srt`, and `clean-json`. Generated transcript JSON
+such as cleaned derivatives and segmented JSON is excluded from input discovery
+by default; use `--include-generated` only when that is intentional. Cache
+manifests are metadata, not transcripts, and are always excluded.
+
+Text changes are opt-in and independent of rendering:
 
 ```powershell
-python .\scripts\transform.py --help
-# or, after `pip install -e .`
-elevenlabs-transform --help
+# Preserve source script but apply the named editorial cleanup
+elevenlabs-toolkit export .\artifacts\clip.json --clean uzbek --format srt
+
+# Convert output text and apply a project-specific replacement
+elevenlabs-toolkit export .\artifacts\clip.json --script cyrillic `
+  --replace "Acme=ACME" --format srt
 ```
 
-Behavior:
-- If no arguments are passed, it prints help and exits.
-- `--path` accepts file, folder, or regex expression path.
-- You must select at least one action:
-  - `--create-srt`
-  - `--create-sentence-srt`
-  - `--create-marker`
-  - `--create-txt`
-  - `--create-txt-combined`
-  - `--create-clean-json`
-  - `--create-social-srt-latin`
-  - `--create-social-srt-cyrillic`
-  - `--create-social-srt-raw`
-  - `--convert-latin-srt-to-cyrillic`
-- Uzbek readability options:
-  - `--uzbek-clean` applies orthography/casing cleanup to generated outputs.
-  - `--sentence-gap-seconds` and `--sentence-hard-gap-seconds` control pause-based sentence splitting for TXT.
-  - `--create-clean-json` creates `_uz_clean.json` files and keeps originals untouched.
-- `--pause-detection` enables experimental pause detection from stretched character timings and works best with JSON created using `--timestamps-granularity character`.
-- Per-source transform outputs default next to each source JSON/SRT file unless an explicit output argument is passed. Use `--srt-out-dir`, `--txt-out-dir`, `--social-out-dir`, `--marker-out-dir`, `--latin-cyr-out-dir`, `--clean-json-out-dir`, or `--combined-txt-path` to override.
+`--script source` is the neutral default. Replacements are literal,
+case-insensitive, single-token `SOURCE=TARGET` mappings; the target is emitted
+exactly as written and is not transliterated. Uzbek replacement sources may be
+written in Latin or Cyrillic script. Cleanup, script conversion, and
+replacements never modify the input transcript.
 
-Examples:
+### Inspect, clean, and transliterate
 
 ```powershell
-python .\scripts\transform.py --path .\media\JSON --create-srt --create-txt
-python .\scripts\transform.py --path .\media\JSON --create-marker
-python .\scripts\transform.py --path .\media\JSON --create-txt-combined
-python .\scripts\transform.py --path .\media\JSON --create-clean-json --uzbek-clean
-python .\scripts\transform.py --path .\media\JSON --create-social-srt-latin --create-social-srt-cyrillic
-python .\scripts\transform.py --path .\media\JSON-char --create-social-srt-latin --pause-detection
-python .\scripts\transform.py --path .\media\SRT-social --convert-latin-srt-to-cyrillic
+# Validate and summarize without writing
+elevenlabs-toolkit inspect .\artifacts\clip.json
+
+# Write an explicitly cleaned transcript derivative
+elevenlabs-toolkit clean .\artifacts\clip.json --language uzbek -o .\exports
+
+# Convert only SRT text; cue numbers, timing, and HTML tags are preserved
+elevenlabs-toolkit transliterate .\exports\clip.srt `
+  --to cyrillic -o .\exports\cyrillic
+
+# Use the interactive front end explicitly
+elevenlabs-toolkit wizard
 ```
 
-Marker EDL notes (`--create-marker`):
-- Creates one DaVinci Resolve-style EDL marker per standard subtitle cue.
-- Markers are placed at each cue start with a 1-frame duration, which mirrors `--create-sentence-srt` cue boundaries.
-- Marker EDL files default next to each source JSON file unless `--marker-out-dir` is passed.
-- Use `--marker-fps` to match your Resolve timeline frame rate.
+Clean JSON keeps changed source text and character-timing provenance alongside
+the derivative. The wizard always shows a dry-run plan and asks for
+confirmation before it dispatches a mutating workflow.
 
-Combined TXT naming (`--create-txt-combined`):
-- one source file -> `<basename>_comb.txt`
-- multiple source files with shared prefix -> `<prefix>_comb.txt`
-- no clear shared prefix -> `combined.txt`
+Put global output controls before the command. For example,
+`elevenlabs-toolkit --json inspect .\artifacts\clip.json` emits a machine-readable
+result, while `-q` and `-v` select quiet and verbose operation.
+
+## Profiles and configuration
+
+Built-in profiles are:
+
+- `standard`: neutral general-purpose segmentation.
+- `social`: shorter, denser cues for short-form video.
+- `broadcast`: slightly longer cues and broadcast-oriented timing.
+- `social-uzbek`: social segmentation plus explicit Uzbek cleanup; it still
+  preserves the source script unless another script is requested.
+
+Select one with `--profile`, or set a default in configuration:
+
+```powershell
+elevenlabs-toolkit export .\artifacts --profile broadcast --format srt
+elevenlabs-toolkit config show
+elevenlabs-toolkit config show --profile social
+```
+
+Copy [`elevenlabs-toolkit.toml.example`](elevenlabs-toolkit.toml.example) to
+`elevenlabs-toolkit.toml` to create a project configuration. The toolkit walks
+from the current directory towards the filesystem root and uses the nearest
+project configuration. At the same directory level,
+`elevenlabs-toolkit.toml` wins over a `pyproject.toml` containing
+`[tool.elevenlabs-toolkit]`.
+
+User configuration is optional and lives at:
+
+- Windows: `%APPDATA%\elevenlabs-toolkit\config.toml`
+- macOS: `~/Library/Application Support/elevenlabs-toolkit/config.toml`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/elevenlabs-toolkit/config.toml`
+
+Effective values are merged in this order, from lowest to highest precedence:
+
+1. Built-in defaults.
+2. User configuration.
+3. Nearest project configuration.
+4. The selected built-in or custom profile.
+5. Explicit command-line options.
+
+This makes project defaults reusable while keeping every one-off CLI decision
+authoritative. `config show` prints the resolved values and all available
+built-in and custom profiles. The `clean` command uses the same effective
+configuration, script, and replacement rules as `export --format clean-json`.
+
+## Safe planning, conflicts, and resume
+
+Every mutating command plans the complete batch before writing. Use `--dry-run`
+to print sources, targets, conflicts, required API calls, and the maximum number
+of attempts; a dry run never writes files or contacts ElevenLabs. It validates
+the path and option plan, while provider response and transcript renderability
+are checked immediately before any output is published during execution.
+
+The default `--on-conflict error` stops before work begins. Other policies are:
+
+- `skip`: preserve existing artifacts and report them as skipped without
+  parsing or rendering them again.
+- `replace`: replace each target atomically through a temporary file in the
+  target directory.
+- `rename`: choose `name (2).ext`, then `name (3).ext`, and so on.
+
+```powershell
+elevenlabs-toolkit export .\artifacts --format srt --dry-run
+elevenlabs-toolkit export .\artifacts --format srt --on-conflict rename
+```
+
+`rename` is available for deterministic local export, cleanup, and
+transliteration jobs. Transcription cache names must remain stable, so
+`transcribe` offers only `error`, `skip`, and `replace`. A stale or incomplete
+cache combined with `skip` is a preflight conflict; the toolkit will not make a
+paid request it cannot cache.
+
+Transcription resumes by default. A cached JSON transcript is reused only when
+its manifest matches the provider identity, source name, size and SHA-256,
+canonical transcription options, transcript filename, and transcript SHA-256.
+Missing local outputs can then be rendered without another paid API request.
+
+Each cache stem has a persistent dot-prefixed advisory lock such as
+`.interview.transcription.lock`. Execution rechecks the cache while holding the
+lock, preventing two toolkit processes from paying for the same missing cache.
+A contender waits up to 300 seconds by default and then reuses the cache created
+by the owner; change that bound with `--lock-timeout`. JSON and manifest
+publication is rolled back if the pair cannot be completed.
+
+Use `--force-transcribe` to ignore a cache and replace all planned outputs. The
+equivalent explicit form is `--no-resume --on-conflict replace`; `--no-resume`
+alone will correctly conflict with an existing cache under the default `error`
+policy.
+
+The non-overwriting policies use same-directory hard links to close the usual
+check/write race. If the destination filesystem cannot support atomic
+no-clobber publication, the command fails with a capability error instead of
+silently overwriting another process. Transcription probes this capability
+under its cache lock before contacting the provider. Use `replace` only when
+overwriting is actually intended.
+
+## Output layout and names
+
+Batch output preserves source-relative directories below the common selected
+input parent. This prevents files in different source subdirectories from
+colliding. Ambiguous mappings, including two files with the same stem in the
+same relative directory, are reported during planning.
+
+For a source named `interview.wav` or transcript named `interview.json`, the
+standard artifact names are:
+
+| Format | Output name |
+| --- | --- |
+| Cached transcript | `interview.json` |
+| Cache manifest | `interview.manifest.json` |
+| Cache lock | `.interview.transcription.lock` |
+| SRT | `interview.srt` |
+| TXT | `interview.txt` |
+| Social SRT | `interview.social.<script>.srt` |
+| Resolve markers | `interview.resolve.edl` |
+| Cue-index SRT | `interview.cue-index.srt` |
+| Clean transcript | `interview.clean.json` |
+| Provider segmented JSON | `interview.segmented.json` |
+| Transliteration | `interview.latin.srt` or `interview.cyrillic.srt` |
+
+Combined text defaults to `combined.txt`. Provider PDF, DOCX, and HTML outputs
+use the source stem and their normal extensions.
+
+## Architecture
+
+```text
+CLI
+  -> input discovery and configuration
+  -> complete JobPlan
+  -> application service
+  -> canonical Transcript -> language processing -> timed Cue objects
+  -> format renderer
+  -> atomic output store and JobResult
+
+ElevenLabs adapter -> validated provider payload -> canonical Transcript
+```
+
+The main package boundaries are:
+
+- `cli/`: argument parsing, terminal/JSON reporting, and exit codes.
+- `application/`: planning, caching, transcription, and export orchestration.
+- `models/`: provider-neutral transcripts, timed cues, options, plans, and
+  results.
+- `providers/`: speech-to-text protocol and the lazy ElevenLabs adapter.
+- `segmentation/`: reusable cue construction and preservation rules.
+- `renderers/`: SRT, text, and Resolve EDL serialization.
+- `languages/`: explicit cleanup and script-conversion profiles.
+- `files/`: deterministic discovery and safe atomic output storage.
+- `config.py`: layered TOML configuration and named profiles.
+
+Provider responses are normalized once at the adapter boundary. Segmentation
+keeps timed words attached to cues so cue timing is derived from the words it
+contains, and renderers do not own filesystem policy.
+
+## Development and build
+
+The committed `uv.lock` is the reproducible development and CI environment.
+With uv installed, sync it and run the complete quality gate with locked
+dependencies:
+
+```powershell
+uv sync --locked --extra stt --extra dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+uv run pytest
+uv run python -m build
+```
+
+For a pip-only environment, `python -m pip install -e ".[stt,dev]"` remains
+supported, but it uses the compatible dependency ranges from `pyproject.toml`
+rather than the exact lock.
+
+Before publishing, install the generated wheel into a fresh virtual
+environment and run `elevenlabs-toolkit --help` from outside this repository.
+That check catches missing package data and accidental dependencies on the
+source tree.

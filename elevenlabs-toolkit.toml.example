@@ -1,0 +1,42 @@
+# Copy this file to `elevenlabs-toolkit.toml` in a project directory.
+# API credentials do not belong here; use ELEVENLABS_API_KEY or --env-file.
+
+profile = "standard"
+
+# Project-wide values are applied before the selected profile. Omit an option
+# to inherit the toolkit default.
+[segmentation]
+max_chars_per_line = 42
+max_lines = 2
+max_duration = 5.5
+min_duration = 1.0
+gap_seconds = 0.9
+hard_gap_seconds = 1.8
+pause_detection = false
+split_on_speaker_change = true
+
+[text]
+script = "source"
+speaker_labels = "none"
+replacements = []
+# Sources may use either Uzbek script; literal targets bypass transliteration.
+# replacements = ["Acme=ACME"]
+# cleanup = "uzbek"  # Editorial cleanup is opt-in.
+
+# Custom profiles contain only the values they need to override. Select this
+# profile with `--profile short-form-uzbek` or set `profile` above to its name.
+[profiles.short-form-uzbek.segmentation]
+max_chars_per_line = 30
+max_lines = 2
+max_duration = 2.6
+min_duration = 0.9
+gap_seconds = 0.75
+hard_gap_seconds = 1.5
+pause_detection = true
+max_words = 9
+
+[profiles.short-form-uzbek.text]
+script = "source"
+cleanup = "uzbek"
+speaker_labels = "secondary"
+replacements = []

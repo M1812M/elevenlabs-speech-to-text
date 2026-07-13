@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+          enable-cache: true
+
+      - name: Install locked development environment
+        run: uv sync --locked --extra dev --extra stt --python "${{ matrix.python-version }}"
+
+      - name: Lint
+        run: uv run --locked --extra dev --extra stt ruff check .
+
+      - name: Check formatting
+        run: uv run --locked --extra dev --extra stt ruff format --check .
+
+      - name: Type check
+        run: uv run --locked --extra dev --extra stt mypy src
+
+      - name: Test
+        run: uv run --locked --extra dev --extra stt pytest
+
+      - name: Build distributions
+        run: uv run --locked --extra dev --extra stt python -m build
+
+      - name: Smoke-test installed wheel outside checkout
+        shell: bash
+        run: |
+          wheel_path="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -f "$wheel_path"
+          wheel_path="$(realpath "$wheel_path")"
+          smoke_root="${RUNNER_TEMP}/elevenlabs-toolkit-wheel-${{ matrix.python-version }}"
+          python -m venv "$smoke_root/venv"
+          "$smoke_root/venv/bin/python" -m pip install --upgrade pip
+          "$smoke_root/venv/bin/python" -m pip install "$wheel_path"
+          cd "$smoke_root"
+          "$smoke_root/venv/bin/python" -c "import elevenlabs_toolkit"
+          "$smoke_root/venv/bin/python" -m elevenlabs_toolkit --help
+          "$smoke_root/venv/bin/python" -m pip install "${wheel_path}[stt]"
+          "$smoke_root/venv/bin/python" -c "from elevenlabs.client import ElevenLabs; import elevenlabs_toolkit.providers"
+
+      - name: Minimize uv cache
+        if: always()
+        run: uv cache prune --ci
