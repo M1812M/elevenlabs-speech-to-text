@@ -24,7 +24,7 @@ def _version() -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="elevenlabs-toolkit",
-        description="Transcribe media and produce safe, reproducible post-production artifacts.",
+        description="Transcribe media directly into ready-to-use post-production files.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     parser.add_argument(
@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     commands = (
-        ("transcribe", "Transcribe local audio/video and cache the provider response.", transcribe.configure_parser),
+        ("transcribe", "Transcribe local audio/video directly into final output files.", transcribe.configure_parser),
         ("export", "Render transcript JSON into local formats.", export.configure_parser),
         ("transliterate", "Convert SRT subtitle text between Uzbek scripts.", transliterate.configure_parser),
         ("clean", "Create an explicitly cleaned transcript derivative.", clean.configure_parser),

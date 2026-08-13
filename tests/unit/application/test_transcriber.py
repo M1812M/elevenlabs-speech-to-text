@@ -6,8 +6,7 @@ import pytest
 
 import elevenlabs_toolkit.application.transcriber as transcriber_module
 from elevenlabs_toolkit.application import execute_transcription, plan_transcription
-from elevenlabs_toolkit.files import exclusive_file_lock
-from elevenlabs_toolkit.models import ArtifactFormat, ExportOptions, TranscriptionOptions
+from elevenlabs_toolkit.models import ArtifactFormat, ConflictPolicy, ExportOptions, TranscriptionOptions
 from elevenlabs_toolkit.providers import ProviderTransientError
 
 PAYLOAD = {
@@ -20,8 +19,6 @@ PAYLOAD = {
 
 
 class FakeProvider:
-    cache_key = "elevenlabs"
-
     def __init__(self, payload: dict, transient_failures: int = 0) -> None:
         self.payload = payload
         self.transient_failures = transient_failures
@@ -34,48 +31,85 @@ class FakeProvider:
         return self.payload
 
 
-def test_transcription_writes_cache_manifest_and_local_render(tmp_path: Path) -> None:
+def _job(
+    tmp_path: Path,
+    formats: tuple[ArtifactFormat, ...] = (ArtifactFormat.JSON,),
+    *,
+    stt: TranscriptionOptions | None = None,
+    policy: ConflictPolicy = ConflictPolicy.ERROR,
+):
     source = tmp_path / "clip.mp3"
     source.write_bytes(b"audio")
     output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.SRT,), output)
-    plan = plan_transcription((source,), output, (ArtifactFormat.SRT,), transcription_options=stt)
+    options = stt or TranscriptionOptions()
+    export = ExportOptions(formats, output)
+    plan = plan_transcription(
+        source.parent.glob("*.mp3"), output, formats, policy=policy, transcription_options=options
+    )
+    return source, output, options, export, plan
+
+
+def test_transcription_writes_provider_json_without_sidecar_files(tmp_path: Path) -> None:
+    _source, output, stt, export, plan = _job(tmp_path)
+
+    result = execute_transcription(plan, stt, export, provider=FakeProvider(PAYLOAD))
+
+    assert result.failed == 0
+    assert {path.name for path in output.iterdir()} == {"clip.json"}
+    assert json.loads((output / "clip.json").read_text(encoding="utf-8")) == PAYLOAD
+
+
+def test_replace_policy_always_requests_a_fresh_transcription(tmp_path: Path) -> None:
+    _source, output, stt, export, first_plan = _job(tmp_path, policy=ConflictPolicy.REPLACE)
+    first_provider = FakeProvider(PAYLOAD)
+    execute_transcription(first_plan, stt, export, provider=first_provider, policy=ConflictPolicy.REPLACE)
+
+    second_plan = plan_transcription(
+        first_plan.sources,
+        output,
+        export.formats,
+        policy=ConflictPolicy.REPLACE,
+        transcription_options=stt,
+    )
+    second_provider = FakeProvider(
+        {
+            "text": "fresh text",
+            "words": [
+                {"type": "word", "text": "fresh", "start": 0, "end": 0.3},
+                {"type": "word", "text": "text", "start": 0.4, "end": 0.8},
+            ],
+        }
+    )
+    result = execute_transcription(
+        second_plan,
+        stt,
+        export,
+        provider=second_provider,
+        policy=ConflictPolicy.REPLACE,
+    )
+
+    assert result.failed == 0
+    assert first_provider.calls == second_provider.calls == 1
+    saved = json.loads((output / "clip.json").read_text(encoding="utf-8"))
+    assert saved["text"] == "fresh text"
+
+
+def test_skip_policy_avoids_provider_when_all_outputs_exist(tmp_path: Path) -> None:
+    source, output, stt, export, _plan = _job(tmp_path, policy=ConflictPolicy.SKIP)
+    output.mkdir()
+    (output / "clip.json").write_text('{"text":"edited"}', encoding="utf-8")
+    plan = plan_transcription((source,), output, export.formats, policy=ConflictPolicy.SKIP, transcription_options=stt)
     provider = FakeProvider(PAYLOAD)
 
-    result = execute_transcription(plan, stt, export, provider=provider)
+    result = execute_transcription(plan, stt, export, provider=provider, policy=ConflictPolicy.SKIP)
 
-    assert result.failed == 0
-    assert provider.calls == 1
-    assert (output / "clip.json").is_file()
-    assert (output / "clip.manifest.json").is_file()
-    assert "hello world" in (output / "clip.srt").read_text(encoding="utf-8")
-
-
-def test_valid_cache_renders_new_format_without_provider_call(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    initial_options = ExportOptions((ArtifactFormat.JSON,), output)
-    initial = plan_transcription((source,), output, (), transcription_options=stt)
-    execute_transcription(initial, stt, initial_options, provider=FakeProvider(PAYLOAD))
-
-    export = ExportOptions((ArtifactFormat.SRT,), output)
-    resumed = plan_transcription((source,), output, (ArtifactFormat.SRT,), transcription_options=stt)
-
-    assert resumed.api_requests == 0
-    result = execute_transcription(resumed, stt, export, provider=None)
-    assert result.failed == 0
-    assert (output / "clip.srt").is_file()
+    assert plan.api_requests == 0
+    assert result.skipped == 1
+    assert provider.calls == 0
 
 
 def test_transient_provider_error_is_retried(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), tmp_path / "out")
-    plan = plan_transcription((source,), export.output_dir, (), transcription_options=stt)
+    _source, _output, stt, export, plan = _job(tmp_path, (ArtifactFormat.TXT,))
     provider = FakeProvider(PAYLOAD, transient_failures=1)
 
     result = execute_transcription(plan, stt, export, provider=provider, retries=1, backoff_seconds=0)
@@ -84,10 +118,7 @@ def test_transient_provider_error_is_retried(tmp_path: Path) -> None:
     assert provider.calls == 2
 
 
-def test_provider_retry_after_overrides_local_backoff(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_provider_retry_after_overrides_local_backoff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class RetryAfterProvider(FakeProvider):
         def transcribe(self, path: Path, options: TranscriptionOptions) -> dict:
             self.calls += 1
@@ -95,11 +126,7 @@ def test_provider_retry_after_overrides_local_backoff(
                 raise ProviderTransientError("rate limited", retry_after_seconds=2.5)
             return self.payload
 
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), tmp_path / "out")
-    plan = plan_transcription((source,), export.output_dir, (), transcription_options=stt)
+    _source, _output, stt, export, plan = _job(tmp_path, (ArtifactFormat.TXT,))
     delays: list[float] = []
     monkeypatch.setattr(transcriber_module.time, "sleep", delays.append)
 
@@ -117,10 +144,8 @@ def test_provider_retry_after_overrides_local_backoff(
 
 
 def test_remote_additional_format_is_decoded_and_written(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
     stt = TranscriptionOptions(remote_formats=("pdf",))
+    source, output, _stt, _export, _plan = _job(tmp_path, (ArtifactFormat.TXT,), stt=stt)
     payload = {
         **PAYLOAD,
         "additional_formats": [
@@ -132,20 +157,20 @@ def test_remote_additional_format_is_decoded_and_written(tmp_path: Path) -> None
             }
         ],
     }
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
+    formats = (ArtifactFormat.TXT, ArtifactFormat.PDF)
+    export = ExportOptions(formats, output)
+    plan = plan_transcription((source,), output, (ArtifactFormat.TXT,), transcription_options=stt)
 
     result = execute_transcription(plan, stt, export, provider=FakeProvider(payload))
 
     assert result.failed == 0
+    assert {path.name for path in output.iterdir()} == {"clip.txt", "clip.pdf"}
     assert (output / "clip.pdf").read_bytes() == b"pdf bytes"
 
 
-def test_untimed_provider_words_are_valid_when_timestamps_are_disabled(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
+def test_untimed_provider_words_can_render_plain_text(tmp_path: Path) -> None:
     stt = TranscriptionOptions(timestamps_granularity="none")
+    _source, output, _stt, export, plan = _job(tmp_path, (ArtifactFormat.TXT,), stt=stt)
     payload = {
         "text": "hello world",
         "words": [
@@ -154,46 +179,38 @@ def test_untimed_provider_words_are_valid_when_timestamps_are_disabled(tmp_path:
             {"type": "word", "text": "world", "start": None, "end": None},
         ],
     }
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
 
     result = execute_transcription(plan, stt, export, provider=FakeProvider(payload))
 
     assert result.failed == 0
-    assert json.loads((output / "clip.json").read_text(encoding="utf-8"))["text"] == "hello world"
+    assert (output / "clip.txt").read_text(encoding="utf-8").strip() == "hello world"
 
 
 @pytest.mark.parametrize(
-    ("stt", "formats", "payload"),
+    ("stt", "payload"),
     [
-        (TranscriptionOptions(), (), {"message": "queued", "request_id": "request-1"}),
-        (TranscriptionOptions(), (), {"text": "hello", "words": []}),
-        (
-            TranscriptionOptions(timestamps_granularity="none"),
-            (ArtifactFormat.SRT,),
-            {"text": "hello", "words": []},
-        ),
-        (TranscriptionOptions(timestamps_granularity="character"), (), PAYLOAD),
-        (TranscriptionOptions(remote_formats=("pdf",)), (), PAYLOAD),
+        (TranscriptionOptions(), {"message": "queued", "request_id": "request-1"}),
+        (TranscriptionOptions(), {"text": "hello", "words": []}),
+        (TranscriptionOptions(timestamps_granularity="character"), PAYLOAD),
+        (TranscriptionOptions(remote_formats=("pdf",)), PAYLOAD),
     ],
 )
-def test_invalid_or_incomplete_response_is_not_cached(
+def test_invalid_or_incomplete_response_leaves_no_outputs(
     tmp_path: Path,
     stt: TranscriptionOptions,
-    formats: tuple[ArtifactFormat, ...],
     payload: dict,
 ) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    export = ExportOptions(formats or (ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, formats, transcription_options=stt)
+    source, output, _stt, _export, _plan = _job(tmp_path, (ArtifactFormat.SRT,), stt=stt)
+    export_formats = (ArtifactFormat.SRT,)
+    if stt.remote_formats:
+        export_formats = (*export_formats, ArtifactFormat.PDF)
+    export = ExportOptions(export_formats, output)
+    plan = plan_transcription((source,), output, (ArtifactFormat.SRT,), transcription_options=stt)
 
     result = execute_transcription(plan, stt, export, provider=FakeProvider(payload))
 
     assert result.failed > 0
-    assert not (output / "clip.json").exists()
-    assert not (output / "clip.manifest.json").exists()
+    assert not output.exists() or not any(output.iterdir())
 
 
 def test_source_change_during_provider_call_discards_response(tmp_path: Path) -> None:
@@ -203,63 +220,19 @@ def test_source_change_during_provider_call_discards_response(tmp_path: Path) ->
             path.write_bytes(b"changed while uploading")
             return payload
 
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
+    _source, output, stt, export, plan = _job(tmp_path, (ArtifactFormat.TXT,))
 
     result = execute_transcription(plan, stt, export, provider=MutatingProvider(PAYLOAD))
 
     assert result.failed > 0
-    assert not (output / "clip.json").exists()
-
-
-def test_cache_lock_prevents_duplicate_paid_request(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
-    provider = FakeProvider(PAYLOAD)
-
-    with exclusive_file_lock(output / ".clip.transcription.lock"):
-        result = execute_transcription(plan, stt, export, provider=provider, lock_timeout_seconds=0)
-
-    assert result.failed > 0
-    assert provider.calls == 0
-
-
-def test_stale_plan_rechecks_cache_after_lock_acquisition(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    first_plan = plan_transcription((source,), output, (), transcription_options=stt)
-    waiting_plan = plan_transcription((source,), output, (), transcription_options=stt)
-
-    first = execute_transcription(first_plan, stt, export, provider=FakeProvider(PAYLOAD))
-    waiting_provider = FakeProvider(PAYLOAD)
-    second = execute_transcription(waiting_plan, stt, export, provider=waiting_provider)
-
-    assert first.failed == 0
-    assert second.failed == 0
-    assert waiting_provider.calls == 0
+    assert not output.exists() or not any(output.iterdir())
 
 
 def test_no_clobber_capability_is_checked_before_provider_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
+    _source, output, stt, export, plan = _job(tmp_path, (ArtifactFormat.TXT,))
     provider = FakeProvider(PAYLOAD)
 
     def unsupported(_directory: Path) -> None:
@@ -271,7 +244,7 @@ def test_no_clobber_capability_is_checked_before_provider_request(
 
     assert result.failed > 0
     assert provider.calls == 0
-    assert not (output / "clip.json").exists()
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -279,7 +252,6 @@ def test_no_clobber_capability_is_checked_before_provider_request(
     [
         ({"backoff_seconds": float("nan")}, "backoff_seconds"),
         ({"request_delay": float("inf")}, "request_delay"),
-        ({"lock_timeout_seconds": float("-inf")}, "lock_timeout_seconds"),
     ],
 )
 def test_non_finite_execution_pacing_is_rejected_before_provider_request(
@@ -287,12 +259,7 @@ def test_non_finite_execution_pacing_is_rejected_before_provider_request(
     kwargs: dict[str, float],
     message: str,
 ) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
+    _source, output, stt, export, plan = _job(tmp_path, (ArtifactFormat.TXT,))
     provider = FakeProvider(PAYLOAD)
 
     with pytest.raises(ValueError, match=message):
@@ -300,29 +267,3 @@ def test_non_finite_execution_pacing_is_rejected_before_provider_request(
 
     assert provider.calls == 0
     assert not output.exists()
-
-
-def test_failed_manifest_publish_rolls_back_new_transcript(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "clip.mp3"
-    source.write_bytes(b"audio")
-    output = tmp_path / "out"
-    stt = TranscriptionOptions()
-    export = ExportOptions((ArtifactFormat.JSON,), output)
-    plan = plan_transcription((source,), output, (), transcription_options=stt)
-    real_atomic_write = transcriber_module.atomic_write_text
-
-    def fail_manifest(path: Path, content: str, policy):
-        if Path(path).name.endswith(".manifest.json"):
-            raise OSError("manifest disk failure")
-        return real_atomic_write(path, content, policy)
-
-    monkeypatch.setattr(transcriber_module, "atomic_write_text", fail_manifest)
-
-    result = execute_transcription(plan, stt, export, provider=FakeProvider(PAYLOAD))
-
-    assert result.failed > 0
-    assert not (output / "clip.json").exists()
-    assert not (output / "clip.manifest.json").exists()

@@ -36,8 +36,6 @@ class ProviderResponseError(ProviderError):
 class SpeechToTextProvider(Protocol):
     """A service capable of turning a local media file into a transcript."""
 
-    cache_key: str
-
     def transcribe(
         self,
         path: str | Path,

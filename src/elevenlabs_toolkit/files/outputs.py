@@ -30,9 +30,8 @@ class AtomicPublishError(OSError):
 def ensure_atomic_no_clobber_supported(directory: str | os.PathLike[str]) -> None:
     """Verify that ``directory`` supports the no-clobber publish primitive.
 
-    Transcription uses this probe before a paid request so a successful
-    provider response is never discarded merely because the destination
-    filesystem cannot create hard links.
+    This probe runs before a paid request so a successful provider response is
+    never discarded merely because the destination cannot create hard links.
     """
 
     parent = Path(directory)

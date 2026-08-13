@@ -15,7 +15,6 @@ class ArtifactFormat(str, Enum):
     RESOLVE_EDL = "resolve-edl"
     CUE_INDEX_SRT = "cue-index-srt"
     CLEAN_JSON = "clean-json"
-    MANIFEST = "manifest"
     PDF = "pdf"
     DOCX = "docx"
     HTML = "html"
@@ -301,7 +300,7 @@ class JobPlan:
     conflicts: tuple[PlanConflict, ...] = ()
     api_requests: int = 0
     dry_run: bool = False
-    cache_key: str | None = None
+    provider: str | None = None
 
     @property
     def valid(self) -> bool:

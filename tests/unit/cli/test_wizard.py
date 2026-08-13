@@ -21,7 +21,7 @@ def test_wizard_previews_before_confirmation_and_cancels_safely(monkeypatch: pyt
     )
 
     assert result == 0
-    assert calls == [["transcribe", "clip.wav", "--output-dir", "artifacts", "--format", "json", "--dry-run"]]
+    assert calls == [["transcribe", "clip.wav", "--output-dir", "media", "--dry-run"]]
 
 
 def test_wizard_runs_only_after_a_successful_preview_and_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,6 +36,6 @@ def test_wizard_runs_only_after_a_successful_preview_and_confirmation(monkeypatc
         dispatch=lambda argv: calls.append(argv) or 0,
     )
 
-    base = ["export", "sample.json", "--output-dir", "exports", "--format", "srt", "--format", "txt"]
+    base = ["export", "sample.json", "--output-dir", "media", "--format", "srt", "--format", "txt"]
     assert result == 0
     assert calls == [[*base, "--dry-run"], base]

@@ -30,9 +30,7 @@ EXPORT_FORMATS = (
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     add_input_arguments(parser, label="TRANSCRIPT")
-    parser.add_argument(
-        "-o", "--output-dir", type=Path, default=Path("exports"), help="Output root (default: ./exports)."
-    )
+    parser.add_argument("-o", "--output-dir", type=Path, default=Path("media"), help="Output root (default: ./media).")
     parser.add_argument(
         "--format",
         action="append",

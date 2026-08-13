@@ -23,14 +23,13 @@ def run(
     if command not in {"transcribe", "export"}:
         context.error("workflow must be transcribe or export")
         return 2
-    source = input("Input file or directory: ").strip().strip('"')
-    if not source:
-        context.error("input is required")
-        return 2
-    default_output = "artifacts" if command == "transcribe" else "exports"
+    source = input("Input file or directory [media]: ").strip().strip('"') or "media"
+    default_output = "media"
     output = input(f"Output directory [{default_output}]: ").strip().strip('"') or default_output
-    default_format = "json" if command == "transcribe" else "srt"
-    formats = input(f"Formats, comma-separated [{default_format}]: ").strip() or default_format
+    if command == "transcribe":
+        formats = input("Additional formats, comma-separated [none; JSON automatic]: ").strip()
+    else:
+        formats = input("Formats, comma-separated [srt]: ").strip() or "srt"
     argv = [command, source, "--output-dir", output]
     for item in formats.split(","):
         if item.strip():

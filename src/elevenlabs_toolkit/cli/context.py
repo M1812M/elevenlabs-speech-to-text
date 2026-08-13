@@ -55,7 +55,7 @@ class CliContext:
             "dry_run": plan.dry_run,
             "api_requests": plan.api_requests,
             "max_api_attempts": maximum_attempts,
-            "provider": plan.cache_key,
+            "provider": plan.provider,
             "sources": [str(path) for path in plan.sources],
             "artifacts": [
                 {"source": str(item.source), "target": str(item.target), "format": item.format.value}

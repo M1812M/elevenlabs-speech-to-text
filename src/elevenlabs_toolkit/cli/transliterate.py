@@ -24,7 +24,7 @@ def _is_srt_meta_line(line: str) -> bool:
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     add_input_arguments(parser, label="SRT")
     parser.add_argument("--to", required=True, choices=[ScriptMode.LATIN.value, ScriptMode.CYRILLIC.value])
-    parser.add_argument("-o", "--output-dir", type=Path, default=Path("exports"))
+    parser.add_argument("-o", "--output-dir", type=Path, default=Path("media"))
     add_execution_arguments(parser)
     parser.set_defaults(handler=run)
 

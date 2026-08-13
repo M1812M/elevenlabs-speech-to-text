@@ -18,7 +18,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", help="Named built-in or configured workflow profile.")
     parser.add_argument("--script", choices=[item.value for item in ScriptMode])
     parser.add_argument("--replace", action="append", default=None, metavar="TOKEN=TOKEN")
-    parser.add_argument("-o", "--output-dir", type=Path, default=Path("exports"))
+    parser.add_argument("-o", "--output-dir", type=Path, default=Path("media"))
     parser.add_argument("--include-generated", action="store_true")
     add_execution_arguments(parser)
     parser.set_defaults(handler=run)

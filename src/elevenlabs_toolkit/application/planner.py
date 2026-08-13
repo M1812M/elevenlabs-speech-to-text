@@ -15,7 +15,6 @@ from ..models import (
     ScriptMode,
     TranscriptionOptions,
 )
-from .cache import cache_matches
 
 
 class PlanningError(ValueError):
@@ -62,7 +61,6 @@ def artifact_name(source: Path, artifact_format: ArtifactFormat, script: ScriptM
         ArtifactFormat.RESOLVE_EDL: f"{stem}.resolve.edl",
         ArtifactFormat.CUE_INDEX_SRT: f"{stem}.cue-index.srt",
         ArtifactFormat.CLEAN_JSON: f"{stem}.clean.json",
-        ArtifactFormat.MANIFEST: f"{stem}.manifest.json",
         ArtifactFormat.PDF: f"{stem}.pdf",
         ArtifactFormat.DOCX: f"{stem}.docx",
         ArtifactFormat.HTML: f"{stem}.html",
@@ -130,8 +128,7 @@ def _finalize_plan(
     policy: ConflictPolicy,
     api_requests: int = 0,
     dry_run: bool = False,
-    existing_ok: set[Path] | None = None,
-    cache_key: str | None = None,
+    provider: str | None = None,
 ) -> JobPlan:
     artifacts: list[PlannedArtifact] = []
     conflicts: list[PlanConflict] = []
@@ -152,7 +149,7 @@ def _finalize_plan(
             conflicts.append(PlanConflict(target, tuple(target_sources), "multiple inputs map to the same output"))
         elif _same_file(target_sources[0], target):
             conflicts.append(PlanConflict(target, tuple(target_sources), "output would overwrite its input"))
-        elif _path_occupied(target) and policy is ConflictPolicy.ERROR and target not in (existing_ok or set()):
+        elif _path_occupied(target) and policy is ConflictPolicy.ERROR:
             conflicts.append(PlanConflict(target, tuple(target_sources), "output already exists"))
 
     return JobPlan(
@@ -161,7 +158,7 @@ def _finalize_plan(
         conflicts=tuple(conflicts),
         api_requests=api_requests,
         dry_run=dry_run,
-        cache_key=cache_key,
+        provider=provider,
     )
 
 
@@ -203,19 +200,18 @@ def plan_transcription(
     formats: Iterable[ArtifactFormat],
     *,
     policy: ConflictPolicy = ConflictPolicy.ERROR,
-    resume: bool = True,
     dry_run: bool = False,
     transcription_options: TranscriptionOptions,
-    provider_key: str = "elevenlabs",
+    provider: str = "elevenlabs",
 ) -> JobPlan:
     source_tuple = tuple(Path(source) for source in sources)
     if not source_tuple:
         raise PlanningError("no audio/video sources were selected")
     if policy is ConflictPolicy.RENAME:
-        raise PlanningError("rename is not supported for transcription because cache names must remain stable")
-    if not isinstance(provider_key, str) or not provider_key.strip():
-        raise PlanningError("provider_key must be a non-empty string")
-    provider_key = provider_key.strip()
+        raise PlanningError("rename is not supported for transcription outputs")
+    if not isinstance(provider, str) or not provider.strip():
+        raise PlanningError("provider must be a non-empty string")
+    provider = provider.strip()
     remote_map = {
         "pdf": ArtifactFormat.PDF,
         "docx": ArtifactFormat.DOCX,
@@ -223,38 +219,33 @@ def plan_transcription(
         "segmented_json": ArtifactFormat.SEGMENTED_JSON,
         "segmented-json": ArtifactFormat.SEGMENTED_JSON,
     }
+    local_formats = tuple(formats)
+    allowed_local_formats = {
+        ArtifactFormat.JSON,
+        ArtifactFormat.SRT,
+        ArtifactFormat.TXT,
+        ArtifactFormat.SOCIAL_SRT,
+        ArtifactFormat.RESOLVE_EDL,
+        ArtifactFormat.CUE_INDEX_SRT,
+    }
+    invalid_formats = [item.value for item in local_formats if item not in allowed_local_formats]
+    if invalid_formats:
+        raise PlanningError("unsupported direct transcription output format(s): " + ", ".join(invalid_formats))
     remote_formats = tuple(remote_map[value] for value in transcription_options.remote_formats if value in remote_map)
-    format_tuple = tuple(dict.fromkeys((ArtifactFormat.JSON, *formats, *remote_formats, ArtifactFormat.MANIFEST)))
+    format_tuple = tuple(dict.fromkeys((*local_formats, *remote_formats)))
+    if not format_tuple:
+        raise PlanningError("at least one transcription output format is required")
     _validate_transcription_names(source_tuple, format_tuple)
     common_parent = _common_parent(source_tuple)
     requested: list[PlannedArtifact] = []
     api_requests = 0
-    existing_ok: set[Path] = set()
-    cache_conflicts: list[PlanConflict] = []
 
     for source in source_tuple:
         relative_parent = _relative_parent(source, common_parent)
-        json_target = output_dir / relative_parent / artifact_name(source, ArtifactFormat.JSON)
-        manifest_target = output_dir / relative_parent / artifact_name(source, ArtifactFormat.MANIFEST)
-        valid_cache = bool(
-            resume
-            and json_target.is_file()
-            and cache_matches(source, json_target, manifest_target, transcription_options, provider=provider_key)
-        )
-        if not valid_cache:
+        targets = [output_dir / relative_parent / artifact_name(source, item) for item in format_tuple]
+        if policy is not ConflictPolicy.SKIP or not all(_path_occupied(target) for target in targets):
             api_requests += 1
-            if policy is ConflictPolicy.SKIP and (_path_occupied(json_target) or _path_occupied(manifest_target)):
-                cache_conflicts.append(
-                    PlanConflict(
-                        _absolute_lexical(json_target),
-                        (source.resolve(),),
-                        "stale or incomplete cache cannot be refreshed with the skip policy",
-                    )
-                )
-        else:
-            existing_ok.update({_absolute_lexical(json_target), _absolute_lexical(manifest_target)})
-        for artifact_format in format_tuple:
-            target = output_dir / relative_parent / artifact_name(source, artifact_format)
+        for artifact_format, target in zip(format_tuple, targets, strict=True):
             requested.append(PlannedArtifact(source, target, artifact_format))
 
     plan = _finalize_plan(
@@ -263,18 +254,17 @@ def plan_transcription(
         policy=policy,
         api_requests=api_requests,
         dry_run=dry_run,
-        existing_ok=existing_ok,
-        cache_key=provider_key,
+        provider=provider,
     )
-    if not cache_conflicts:
+    if plan.valid:
         return plan
     return JobPlan(
         sources=plan.sources,
         artifacts=plan.artifacts,
-        conflicts=(*plan.conflicts, *cache_conflicts),
+        conflicts=plan.conflicts,
         api_requests=0,
         dry_run=plan.dry_run,
-        cache_key=plan.cache_key,
+        provider=plan.provider,
     )
 
 

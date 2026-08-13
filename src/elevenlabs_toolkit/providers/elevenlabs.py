@@ -54,13 +54,11 @@ class ElevenLabsProvider:
     When supplied, neither the SDK nor credentials are required.
     """
 
-    cache_key = "elevenlabs"
-
     def __init__(
         self,
         api_key: str | None = None,
         *,
-        env_file: str | Path | None = None,
+        env_file: str | Path | None = Path(".env"),
         client: Any | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> None:

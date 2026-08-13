@@ -20,7 +20,6 @@ from .common import add_execution_arguments, add_input_arguments, input_spec
 from .context import CliContext
 
 LOCAL_FORMATS = (
-    ArtifactFormat.JSON,
     ArtifactFormat.SRT,
     ArtifactFormat.TXT,
     ArtifactFormat.SOCIAL_SRT,
@@ -32,10 +31,14 @@ REMOTE_FORMATS = ("pdf", "docx", "html", "segmented-json")
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     add_input_arguments(parser, label="MEDIA")
+    parser.add_argument("-o", "--output-dir", type=Path, default=Path("media"), help="Output root (default: ./media).")
     parser.add_argument(
-        "-o", "--output-dir", type=Path, default=Path("artifacts"), help="Output/cache root (default: ./artifacts)."
+        "--format",
+        action="append",
+        choices=[item.value for item in LOCAL_FORMATS],
+        dest="formats",
+        help="Additional local output format; JSON is always written.",
     )
-    parser.add_argument("--format", action="append", choices=[item.value for item in LOCAL_FORMATS], dest="formats")
     parser.add_argument("--remote-format", action="append", choices=REMOTE_FORMATS, default=[])
     parser.add_argument("--profile")
     parser.add_argument("--script", choices=[item.value for item in ScriptMode])
@@ -55,15 +58,9 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--temperature", type=float)
-    parser.add_argument(
-        "--env-file", type=Path, help="Explicit dotenv file; no implicit package/CWD search is performed."
-    )
+    parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Dotenv file (default: ./.env).")
 
     parser.add_argument("--pause-detection", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument(
-        "--force-transcribe", action="store_true", help="Ignore cached transcripts and replace planned outputs."
-    )
     parser.add_argument(
         "--retries",
         type=int,
@@ -72,22 +69,17 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--retry-backoff", type=float, default=1.0)
     parser.add_argument("--request-delay", type=float, default=0.0)
-    parser.add_argument(
-        "--lock-timeout",
-        type=float,
-        default=300.0,
-        help="Seconds to wait for another process publishing the same cache (default: 300).",
-    )
     add_execution_arguments(
         parser,
-        default_policy="error",
+        default_policy="replace",
         allowed_policies=(ConflictPolicy.ERROR, ConflictPolicy.SKIP, ConflictPolicy.REPLACE),
     )
     parser.set_defaults(handler=run)
 
 
 def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, ExportOptions, tuple[ArtifactFormat, ...]]:
-    formats = tuple(ArtifactFormat(item) for item in (args.formats or [ArtifactFormat.JSON.value]))
+    requested_formats = (ArtifactFormat(item) for item in (args.formats or ()))
+    formats = tuple(dict.fromkeys((ArtifactFormat.JSON, *requested_formats)))
     timed_formats = {
         ArtifactFormat.SRT,
         ArtifactFormat.SOCIAL_SRT,
@@ -115,7 +107,6 @@ def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, Expo
     pacing = {
         "retry backoff": args.retry_backoff,
         "request delay": args.request_delay,
-        "lock timeout": args.lock_timeout,
     }
     if args.retries < 0:
         raise ValueError("retries must be >= 0")
@@ -143,14 +134,12 @@ def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, Expo
 def run(args: argparse.Namespace, context: CliContext) -> int:
     sources = discover_inputs(input_spec(args), set(AUDIO_VIDEO_SUFFIXES), exclude_generated=False)
     transcription, export, formats = _build_options(args)
-    policy = ConflictPolicy.REPLACE if args.force_transcribe else ConflictPolicy(args.on_conflict)
-    resume = args.resume and not args.force_transcribe
+    policy = ConflictPolicy(args.on_conflict)
     plan = plan_transcription(
         sources,
         args.output_dir,
-        tuple(item for item in formats if item is not ArtifactFormat.JSON),
+        formats,
         policy=policy,
-        resume=resume,
         dry_run=args.dry_run,
         transcription_options=transcription,
     )
@@ -165,11 +154,9 @@ def run(args: argparse.Namespace, context: CliContext) -> int:
         export,
         provider=provider,
         policy=policy,
-        resume=resume,
         retries=args.retries,
         backoff_seconds=args.retry_backoff,
         request_delay=args.request_delay,
-        lock_timeout_seconds=args.lock_timeout,
         fail_fast=args.fail_fast,
         progress=context.log,
     )

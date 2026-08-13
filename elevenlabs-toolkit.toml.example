@@ -1,5 +1,5 @@
 # Copy this file to `elevenlabs-toolkit.toml` in a project directory.
-# API credentials do not belong here; use ELEVENLABS_API_KEY or --env-file.
+# API credentials do not belong here; use ELEVENLABS_API_KEY in the default .env file.
 
 profile = "standard"
 

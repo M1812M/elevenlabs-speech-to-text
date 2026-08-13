@@ -33,7 +33,7 @@ def test_direct_python_script_shows_help_without_an_installed_package() -> None:
     result = _run_script("--help")
 
     assert result.returncode == 0, result.stderr
-    assert "Transcribe media and produce safe, reproducible post-production artifacts." in result.stdout
+    assert "Transcribe media directly into ready-to-use post-production files." in result.stdout
 
 
 def _transcript(path: Path) -> Path:
@@ -72,7 +72,7 @@ def test_json_dry_run_is_one_machine_readable_document_and_writes_nothing(tmp_pa
 
 
 def test_nonexistent_path_is_not_treated_as_regex(tmp_path: Path) -> None:
-    result = _run("export", str(tmp_path / ".*[.]json"), "--format", "srt")
+    result = _run("export", str(tmp_path / "missing.json"), "--format", "srt")
 
     assert result.returncode == 2
     assert "does not exist" in result.stderr
@@ -90,7 +90,49 @@ def test_transcribe_dry_run_needs_no_sdk_or_api_key(tmp_path: Path) -> None:
     assert payload["api_requests"] == 1
     assert payload["max_api_attempts"] == 1
     assert payload["provider"] == "elevenlabs"
+    assert {item["format"] for item in payload["artifacts"]} == {"json"}
     assert not output.exists()
+
+
+def test_transcribe_directory_is_recursive_and_accepts_a_positional_glob(tmp_path: Path) -> None:
+    source = tmp_path / "inputs"
+    (source / "nested").mkdir(parents=True)
+    (source / "top.wav").write_bytes(b"audio")
+    (source / "nested" / "nested.wav").write_bytes(b"audio")
+    (source / "nested" / "other.flac").write_bytes(b"audio")
+
+    result = _run("--json", "transcribe", str(source), "*.wav", "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert {Path(item).name for item in payload["sources"]} == {"top.wav", "nested.wav"}
+    assert payload["api_requests"] == 2
+
+
+def test_transcribe_folder_without_selector_finds_all_supported_media(tmp_path: Path) -> None:
+    source = tmp_path / "inputs"
+    (source / "nested").mkdir(parents=True)
+    (source / "top.wav").write_bytes(b"audio")
+    (source / "nested" / "other.flac").write_bytes(b"audio")
+    (source / "nested" / "notes.txt").write_text("ignore", encoding="utf-8")
+
+    result = _run("--json", "transcribe", str(source), "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert {Path(item).suffix for item in payload["sources"]} == {".wav", ".flac"}
+    assert payload["api_requests"] == 2
+
+
+def test_transcribe_keeps_json_when_an_additional_format_is_requested(tmp_path: Path) -> None:
+    source = tmp_path / "clip.wav"
+    source.write_bytes(b"audio")
+
+    result = _run("--json", "transcribe", str(source), "--format", "social-srt", "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert {item["format"] for item in payload["artifacts"]} == {"json", "social-srt"}
 
 
 def test_pause_detection_dependency_is_validated_before_api_work(tmp_path: Path) -> None:
@@ -202,7 +244,6 @@ def test_transcribe_rejects_non_finite_pacing_before_dry_run(tmp_path: Path) -> 
     for option, value in (
         ("--retry-backoff", "inf"),
         ("--request-delay", "nan"),
-        ("--lock-timeout", "inf"),
     ):
         result = _run("transcribe", str(source), option, value, "--dry-run")
         assert result.returncode == 2
@@ -229,6 +270,16 @@ def test_transcription_cli_does_not_offer_unstable_cache_rename(tmp_path: Path) 
 
     assert result.returncode == 2
     assert "invalid choice" in result.stderr
+
+
+def test_removed_transcription_cache_flags_are_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp3"
+    source.write_bytes(b"not-real-audio")
+
+    for option in ("--force-transcribe", "--resume", "--lock-timeout"):
+        result = _run("transcribe", str(source), option, "--dry-run")
+        assert result.returncode == 2
+        assert "unrecognized arguments" in result.stderr
 
 
 def test_clean_json_rejects_explicit_cleanup_opt_out(tmp_path: Path) -> None:
