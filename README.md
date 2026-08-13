@@ -11,25 +11,22 @@ and data model settle.
 ## Installation
 
 Python 3.10 or newer is required. Create and activate a virtual environment,
-then choose the smallest useful installation:
+then install only the dependencies needed for the workflow:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Offline commands: export, inspect, clean, transliterate, and config
-python -m pip install -e .
+# Only needed for transcription
+python -m pip install "elevenlabs>=2.53,<3"
 
-# Also install the ElevenLabs SDK for transcription
-python -m pip install -e ".[stt]"
-
-# Transcription plus test and build tools
-python -m pip install -e ".[stt,dev]"
+# Optional development tools
+python -m pip install pytest ruff mypy
 ```
 
-The canonical executable is `elevenlabs-toolkit`. Run
-`elevenlabs-toolkit --help` or `elevenlabs-toolkit COMMAND --help` for the full
-option set. `python -m elevenlabs_toolkit` is equivalent.
+The project is run directly as a Python script; it does not build an EXE.
+Run `python .\run_toolkit.py --help` or
+`python .\run_toolkit.py COMMAND --help` for the full option set.
 
 ## Credentials
 
@@ -37,14 +34,14 @@ Only `transcribe` needs an API key. Set it in the process environment:
 
 ```powershell
 $env:ELEVENLABS_API_KEY = "your-key"
-elevenlabs-toolkit transcribe .\media\clip.wav
+python .\run_toolkit.py transcribe .\media\clip.wav
 ```
 
 Or pass a dotenv file explicitly:
 
 ```powershell
 Copy-Item .\.env.example .\.env
-elevenlabs-toolkit transcribe .\media --env-file .\.env
+python .\run_toolkit.py transcribe .\media --env-file .\.env
 ```
 
 The toolkit does not search the package directory or current directory for a
@@ -69,14 +66,14 @@ it.
 
 ```powershell
 # JSON transcript and manifest
-elevenlabs-toolkit transcribe .\media\clip.wav --env-file .\.env
+python .\run_toolkit.py transcribe .\media\clip.wav --env-file .\.env
 
 # Batch transcript plus locally rendered subtitles and text
-elevenlabs-toolkit transcribe .\media -o .\artifacts --recursive `
+python .\run_toolkit.py transcribe .\media -o .\artifacts --recursive `
   --glob "*.wav" --format json --format srt --format txt --env-file .\.env
 
 # Request provider-generated formats as well
-elevenlabs-toolkit transcribe .\media\interview.mp3 `
+python .\run_toolkit.py transcribe .\media\interview.mp3 `
   --remote-format pdf --remote-format docx --env-file .\.env
 ```
 
@@ -99,13 +96,13 @@ transcript is available, or separate multichannel response shapes.
 artifacts from one validated transcript.
 
 ```powershell
-elevenlabs-toolkit export .\artifacts -o .\exports `
+python .\run_toolkit.py export .\artifacts -o .\exports `
   --format srt --format txt --format resolve-edl
 
-elevenlabs-toolkit export .\artifacts -o .\exports `
+python .\run_toolkit.py export .\artifacts -o .\exports `
   --profile social --format social-srt
 
-elevenlabs-toolkit export .\artifacts -o .\exports `
+python .\run_toolkit.py export .\artifacts -o .\exports `
   --format combined-txt --combined-name production.txt
 ```
 
@@ -119,10 +116,10 @@ Text changes are opt-in and independent of rendering:
 
 ```powershell
 # Preserve source script but apply the named editorial cleanup
-elevenlabs-toolkit export .\artifacts\clip.json --clean uzbek --format srt
+python .\run_toolkit.py export .\artifacts\clip.json --clean uzbek --format srt
 
 # Convert output text and apply a project-specific replacement
-elevenlabs-toolkit export .\artifacts\clip.json --script cyrillic `
+python .\run_toolkit.py export .\artifacts\clip.json --script cyrillic `
   --replace "Acme=ACME" --format srt
 ```
 
@@ -136,17 +133,17 @@ replacements never modify the input transcript.
 
 ```powershell
 # Validate and summarize without writing
-elevenlabs-toolkit inspect .\artifacts\clip.json
+python .\run_toolkit.py inspect .\artifacts\clip.json
 
 # Write an explicitly cleaned transcript derivative
-elevenlabs-toolkit clean .\artifacts\clip.json --language uzbek -o .\exports
+python .\run_toolkit.py clean .\artifacts\clip.json --language uzbek -o .\exports
 
 # Convert only SRT text; cue numbers, timing, and HTML tags are preserved
-elevenlabs-toolkit transliterate .\exports\clip.srt `
+python .\run_toolkit.py transliterate .\exports\clip.srt `
   --to cyrillic -o .\exports\cyrillic
 
 # Use the interactive front end explicitly
-elevenlabs-toolkit wizard
+python .\run_toolkit.py wizard
 ```
 
 Clean JSON keeps changed source text and character-timing provenance alongside
@@ -154,7 +151,7 @@ the derivative. The wizard always shows a dry-run plan and asks for
 confirmation before it dispatches a mutating workflow.
 
 Put global output controls before the command. For example,
-`elevenlabs-toolkit --json inspect .\artifacts\clip.json` emits a machine-readable
+`python .\run_toolkit.py --json inspect .\artifacts\clip.json` emits a machine-readable
 result, while `-q` and `-v` select quiet and verbose operation.
 
 ## Profiles and configuration
@@ -170,9 +167,9 @@ Built-in profiles are:
 Select one with `--profile`, or set a default in configuration:
 
 ```powershell
-elevenlabs-toolkit export .\artifacts --profile broadcast --format srt
-elevenlabs-toolkit config show
-elevenlabs-toolkit config show --profile social
+python .\run_toolkit.py export .\artifacts --profile broadcast --format srt
+python .\run_toolkit.py config show
+python .\run_toolkit.py config show --profile social
 ```
 
 Copy [`elevenlabs-toolkit.toml.example`](elevenlabs-toolkit.toml.example) to
@@ -218,8 +215,8 @@ The default `--on-conflict error` stops before work begins. Other policies are:
 - `rename`: choose `name (2).ext`, then `name (3).ext`, and so on.
 
 ```powershell
-elevenlabs-toolkit export .\artifacts --format srt --dry-run
-elevenlabs-toolkit export .\artifacts --format srt --on-conflict rename
+python .\run_toolkit.py export .\artifacts --format srt --dry-run
+python .\run_toolkit.py export .\artifacts --format srt --on-conflict rename
 ```
 
 `rename` is available for deterministic local export, cleanup, and
@@ -310,7 +307,7 @@ Provider responses are normalized once at the adapter boundary. Segmentation
 keeps timed words attached to cues so cue timing is derived from the words it
 contains, and renderers do not own filesystem policy.
 
-## Development and build
+## Development
 
 The committed `uv.lock` is the reproducible development and CI environment.
 With uv installed, sync it and run the complete quality gate with locked
@@ -322,14 +319,12 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 uv run pytest
-uv run python -m build
+uv run python run_toolkit.py --help
 ```
 
 For a pip-only environment, `python -m pip install -e ".[stt,dev]"` remains
 supported, but it uses the compatible dependency ranges from `pyproject.toml`
 rather than the exact lock.
 
-Before publishing, install the generated wheel into a fresh virtual
-environment and run `elevenlabs-toolkit --help` from outside this repository.
-That check catches missing package data and accidental dependencies on the
-source tree.
+The direct-script smoke test verifies the launcher can find the local source
+tree without creating a distribution or executable.

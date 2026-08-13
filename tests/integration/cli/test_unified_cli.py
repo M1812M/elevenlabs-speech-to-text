@@ -20,6 +20,22 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_script(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "run_toolkit.py", *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_direct_python_script_shows_help_without_an_installed_package() -> None:
+    result = _run_script("--help")
+
+    assert result.returncode == 0, result.stderr
+    assert "Transcribe media and produce safe, reproducible post-production artifacts." in result.stdout
+
+
 def _transcript(path: Path) -> Path:
     payload = {
         "text": "Салом дунё.",

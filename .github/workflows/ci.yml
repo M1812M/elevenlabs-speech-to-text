@@ -51,24 +51,8 @@ jobs:
       - name: Test
         run: uv run --locked --extra dev --extra stt pytest
 
-      - name: Build distributions
-        run: uv run --locked --extra dev --extra stt python -m build
-
-      - name: Smoke-test installed wheel outside checkout
-        shell: bash
-        run: |
-          wheel_path="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
-          test -f "$wheel_path"
-          wheel_path="$(realpath "$wheel_path")"
-          smoke_root="${RUNNER_TEMP}/elevenlabs-toolkit-wheel-${{ matrix.python-version }}"
-          python -m venv "$smoke_root/venv"
-          "$smoke_root/venv/bin/python" -m pip install --upgrade pip
-          "$smoke_root/venv/bin/python" -m pip install "$wheel_path"
-          cd "$smoke_root"
-          "$smoke_root/venv/bin/python" -c "import elevenlabs_toolkit"
-          "$smoke_root/venv/bin/python" -m elevenlabs_toolkit --help
-          "$smoke_root/venv/bin/python" -m pip install "${wheel_path}[stt]"
-          "$smoke_root/venv/bin/python" -c "from elevenlabs.client import ElevenLabs; import elevenlabs_toolkit.providers"
+      - name: Smoke-test direct Python script
+        run: uv run --locked --extra dev --extra stt python run_toolkit.py --help
 
       - name: Minimize uv cache
         if: always()

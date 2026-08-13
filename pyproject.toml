@@ -32,14 +32,10 @@ stt = [
   "elevenlabs>=2.53,<3",
 ]
 dev = [
-  "build>=1.2,<2",
   "mypy>=1.15,<2",
   "pytest>=8.3,<10",
   "ruff>=0.11,<1",
 ]
-
-[project.scripts]
-elevenlabs-toolkit = "elevenlabs_toolkit.cli.main:main"
 
 [project.urls]
 Repository = "https://github.com/M1812M/elevenlabs-speech-to-text"

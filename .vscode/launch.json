@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: ElevenLabs Toolkit CLI",
+      "name": "Python: ElevenLabs Toolkit Script",
       "type": "debugpy",
       "request": "launch",
-      "module": "elevenlabs_toolkit",
+      "program": "${workspaceFolder}/run_toolkit.py",
       "args": ["--help"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
