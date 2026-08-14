@@ -48,6 +48,30 @@ def test_export_writes_multiple_formats_through_atomic_store(tmp_path: Path) -> 
     assert "FCM: NON-DROP FRAME" in (tmp_path / "out" / "sample.resolve.edl").read_text(encoding="utf-8")
 
 
+def test_srt_mini_export_uses_json_sentence_timings(tmp_path: Path) -> None:
+    source = tmp_path / "sample.json"
+    payload = {
+        "text": "First. Second sentence.",
+        "words": [
+            {"type": "word", "text": "First.", "start": 0.1, "end": 0.4},
+            {"type": "word", "text": "Second", "start": 0.41, "end": 0.7},
+            {"type": "word", "text": "sentence.", "start": 0.71, "end": 1.0},
+        ],
+    }
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    options = ExportOptions((ArtifactFormat.SRT_MINI,), tmp_path / "out")
+
+    result = execute_export(plan_exports((source,), options), options)
+
+    assert result.failed == 0
+    rendered = (tmp_path / "out" / "sample.mini.srt").read_text(encoding="utf-8")
+    assert rendered.count(" --> ") == 2
+    assert "00:00:00,100 --> 00:00:00,355" in rendered
+    assert "00:00:00,455 --> 00:00:01,000" in rendered
+    assert "First." in rendered
+    assert "Second sentence." in rendered
+
+
 def test_combined_text_includes_source_provenance(tmp_path: Path) -> None:
     first = _write_transcript(tmp_path / "first.json")
     second = _write_transcript(tmp_path / "second.json")

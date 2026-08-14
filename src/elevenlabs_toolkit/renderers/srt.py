@@ -126,10 +126,17 @@ def render_srt(
     max_lines: int = DEFAULT_MAX_LINES,
     speaker_labels: SpeakerLabels = SpeakerLabels.NONE,
     main_speaker: str | None = None,
+    smart_line_breaks: bool = False,
 ) -> str:
-    """Render timed cues as SubRip text without performing filesystem I/O."""
+    """Render timed cues as SubRip text without performing filesystem I/O.
+
+    Cue text stays on one line by default. ``smart_line_breaks`` enables the
+    optional lossless, balanced wrapping controlled by the line limits.
+    """
     _validate_line_limit(max_chars_per_line, "max_chars_per_line")
     _validate_line_limit(max_lines, "max_lines")
+    if not isinstance(smart_line_breaks, bool):
+        raise TypeError("smart_line_breaks must be a boolean")
 
     labels = SpeakerLabels(speaker_labels)
     if main_speaker is None:
@@ -145,7 +152,7 @@ def render_srt(
         )
         if should_label:
             text = f"[{cue.speaker}] {text}"
-        body = wrap_text_lossless(text, max_chars_per_line, max_lines)
+        body = wrap_text_lossless(text, max_chars_per_line, max_lines) if smart_line_breaks else _inline_text(text)
         blocks.append(_render_block(index, cue, body))
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 

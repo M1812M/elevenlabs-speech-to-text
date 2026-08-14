@@ -22,7 +22,7 @@ from ..models import (
     Word,
 )
 from ..renderers import render_cue_index_srt, render_resolve_edl, render_srt, render_txt
-from ..segmentation import segment_standard, segment_transcript, sentences_from_transcript
+from ..segmentation import segment_mini, segment_standard, sentences_from_transcript
 from .planner import PlanningError
 
 UZBEK_SENTENCE_MARKERS = {"keyin", "shunda", "lekin", "ammo", "biroq", "xullas", "mana", "hozir", "umuman", "demak"}
@@ -122,7 +122,7 @@ def render_artifact(
     segmentation = options.segmentation
     timed_formats = {
         ArtifactFormat.SRT,
-        ArtifactFormat.SOCIAL_SRT,
+        ArtifactFormat.SRT_MINI,
         ArtifactFormat.CUE_INDEX_SRT,
         ArtifactFormat.RESOLVE_EDL,
     }
@@ -139,27 +139,19 @@ def render_artifact(
             text_transform=transform,
             max_chars_per_line=segmentation.max_chars_per_line,
             max_lines=segmentation.max_lines,
+            smart_line_breaks=options.srt_smart_line_breaks,
             speaker_labels=options.text.speaker_labels,
             main_speaker=main_speaker,
         )
-    if artifact_format is ArtifactFormat.SOCIAL_SRT:
-        if segmentation.preset not in {"social", "social-uzbek"}:
-            segmentation = replace(
-                segmentation,
-                preset="social",
-                max_chars_per_line=min(segmentation.max_chars_per_line, 30),
-                max_duration=min(segmentation.max_duration, 2.6),
-                min_duration=min(segmentation.min_duration, 0.9),
-                gap_seconds=min(segmentation.gap_seconds, 0.75),
-                max_words=segmentation.max_words or 9,
-            )
+    if artifact_format is ArtifactFormat.SRT_MINI:
         text_prefix, main_speaker = _subtitle_measurement(transcript, options)
-        cues = segment_transcript(transcript, segmentation, transform, text_prefix)
+        cues = segment_mini(transcript)
         return render_srt(
             cues,
             text_transform=transform,
             max_chars_per_line=segmentation.max_chars_per_line,
             max_lines=segmentation.max_lines,
+            smart_line_breaks=options.srt_smart_line_breaks,
             speaker_labels=options.text.speaker_labels,
             main_speaker=main_speaker,
         )

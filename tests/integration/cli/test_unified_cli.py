@@ -58,6 +58,48 @@ def test_export_preserves_source_script_by_default(tmp_path: Path) -> None:
     assert "Салом дунё." in (output / "sample.srt").read_text(encoding="utf-8")
 
 
+def test_export_srt_line_breaks_are_opt_in(tmp_path: Path) -> None:
+    source = tmp_path / "sample.json"
+    source.write_text(
+        json.dumps(
+            {
+                "text": "one two three four",
+                "words": [{"type": "word", "text": "one two three four", "start": 0.0, "end": 0.7}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inline_output = tmp_path / "inline"
+    wrapped_output = tmp_path / "wrapped"
+
+    inline = _run(
+        "export",
+        str(source),
+        "-o",
+        str(inline_output),
+        "--max-chars-per-line",
+        "9",
+        "--max-lines",
+        "2",
+    )
+    wrapped = _run(
+        "export",
+        str(source),
+        "-o",
+        str(wrapped_output),
+        "--max-chars-per-line",
+        "9",
+        "--max-lines",
+        "2",
+        "--srt-smart-line-breaks",
+    )
+
+    assert inline.returncode == 0, inline.stderr
+    assert wrapped.returncode == 0, wrapped.stderr
+    assert "\none two three four\n" in (inline_output / "sample.srt").read_text(encoding="utf-8")
+    assert "\none two\nthree four\n" in (wrapped_output / "sample.srt").read_text(encoding="utf-8")
+
+
 def test_json_dry_run_is_one_machine_readable_document_and_writes_nothing(tmp_path: Path) -> None:
     source = _transcript(tmp_path / "sample.json")
     output = tmp_path / "out"
@@ -124,15 +166,51 @@ def test_transcribe_folder_without_selector_finds_all_supported_media(tmp_path: 
     assert payload["api_requests"] == 2
 
 
-def test_transcribe_keeps_json_when_an_additional_format_is_requested(tmp_path: Path) -> None:
+def test_transcribe_keeps_json_when_srt_mini_is_requested(tmp_path: Path) -> None:
     source = tmp_path / "clip.wav"
     source.write_bytes(b"audio")
 
-    result = _run("--json", "transcribe", str(source), "--format", "social-srt", "--dry-run")
+    result = _run(
+        "--json",
+        "transcribe",
+        str(source),
+        "--format",
+        "srt-mini",
+        "--dry-run",
+    )
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert {item["format"] for item in payload["artifacts"]} == {"json", "social-srt"}
+    assert {item["format"] for item in payload["artifacts"]} == {"json", "srt-mini"}
+
+
+def test_export_srt_mini_dry_run_needs_only_json(tmp_path: Path) -> None:
+    source = _transcript(tmp_path / "sample.json")
+
+    result = _run(
+        "--json",
+        "export",
+        str(source),
+        "--format",
+        "srt-mini",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["artifacts"][0]["target"].endswith("sample.mini.srt")
+
+
+def test_removed_srt_formats_and_marker_options_are_rejected(tmp_path: Path) -> None:
+    source = _transcript(tmp_path / "sample.json")
+
+    removed = _run("export", str(source), "--format", "social-srt", "--dry-run")
+    marker = _run("export", str(source), "--format", "srt-mini", "--marker-file", "markers.txt", "--dry-run")
+
+    assert removed.returncode == 2
+    assert "invalid choice" in removed.stderr
+    assert marker.returncode == 2
+    assert "unrecognized arguments: --marker-file" in marker.stderr
 
 
 def test_pause_detection_dependency_is_validated_before_api_work(tmp_path: Path) -> None:

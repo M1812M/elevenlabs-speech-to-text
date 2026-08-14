@@ -56,8 +56,8 @@ def artifact_name(source: Path, artifact_format: ArtifactFormat, script: ScriptM
     names = {
         ArtifactFormat.JSON: f"{stem}.json",
         ArtifactFormat.SRT: f"{stem}.srt",
+        ArtifactFormat.SRT_MINI: f"{stem}.mini.srt",
         ArtifactFormat.TXT: f"{stem}.txt",
-        ArtifactFormat.SOCIAL_SRT: f"{stem}.social.{script.value}.srt",
         ArtifactFormat.RESOLVE_EDL: f"{stem}.resolve.edl",
         ArtifactFormat.CUE_INDEX_SRT: f"{stem}.cue-index.srt",
         ArtifactFormat.CLEAN_JSON: f"{stem}.clean.json",
@@ -223,8 +223,8 @@ def plan_transcription(
     allowed_local_formats = {
         ArtifactFormat.JSON,
         ArtifactFormat.SRT,
+        ArtifactFormat.SRT_MINI,
         ArtifactFormat.TXT,
-        ArtifactFormat.SOCIAL_SRT,
         ArtifactFormat.RESOLVE_EDL,
         ArtifactFormat.CUE_INDEX_SRT,
     }

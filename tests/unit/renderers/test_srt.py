@@ -39,7 +39,7 @@ def test_wrap_text_lossless_validates_limits(name: str, value: object, exception
         wrap_text_lossless("some text", **kwargs)  # type: ignore[arg-type]
 
 
-def test_render_srt_uses_cue_timing_transform_and_requested_wrapping() -> None:
+def test_render_srt_keeps_cue_text_on_one_line_by_default() -> None:
     cues = (
         _cue(
             Word("hello", 0.0, 0.5),
@@ -52,6 +52,20 @@ def test_render_srt_uses_cue_timing_transform_and_requested_wrapping() -> None:
         text_transform=str.upper,
         max_chars_per_line=6,
         max_lines=2,
+    )
+
+    assert rendered == "1\n00:00:00,000 --> 00:00:01,250\nHELLO WORLD\n"
+
+
+def test_render_srt_uses_requested_smart_line_breaks() -> None:
+    cues = (_cue(Word("hello", 0.0, 0.5), Word("world", 0.6, 1.25)),)
+
+    rendered = render_srt(
+        cues,
+        text_transform=str.upper,
+        max_chars_per_line=6,
+        max_lines=2,
+        smart_line_breaks=True,
     )
 
     assert rendered == "1\n00:00:00,000 --> 00:00:01,250\nHELLO\nWORLD\n"

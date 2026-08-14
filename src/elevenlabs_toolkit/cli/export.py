@@ -19,9 +19,9 @@ from .context import CliContext
 
 EXPORT_FORMATS = (
     ArtifactFormat.SRT,
+    ArtifactFormat.SRT_MINI,
     ArtifactFormat.TXT,
     ArtifactFormat.COMBINED_TXT,
-    ArtifactFormat.SOCIAL_SRT,
     ArtifactFormat.RESOLVE_EDL,
     ArtifactFormat.CUE_INDEX_SRT,
     ArtifactFormat.CLEAN_JSON,
@@ -54,6 +54,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pause-detection", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--max-chars-per-line", type=int)
     parser.add_argument("--max-lines", type=int)
+    parser.add_argument(
+        "--srt-smart-line-breaks",
+        action="store_true",
+        help="Balance cue text over multiple lines; default is one text line per cue.",
+    )
     parser.add_argument("--max-duration", type=float)
     parser.add_argument("--marker-fps", type=float, default=25.0)
     parser.add_argument("--marker-color", default="ResolveColorBlue")
@@ -94,6 +99,7 @@ def _options(args: argparse.Namespace) -> ExportOptions:
         marker_fps=args.marker_fps,
         marker_color=args.marker_color,
         marker_prefix=args.marker_prefix,
+        srt_smart_line_breaks=args.srt_smart_line_breaks,
     )
 
 

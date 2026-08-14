@@ -103,7 +103,7 @@ python .\run_toolkit.py transcribe --format srt --format resolve-edl
 The first command writes JSON + TXT. The second writes JSON + SRT + Resolve EDL.
 Without `--format`, only JSON is written.
 
-Additional local choices are `srt`, `txt`, `social-srt`, `resolve-edl`, and
+Additional local choices are `srt`, `txt`, `srt-mini`, `resolve-edl`, and
 `cue-index-srt`. Provider-generated choices are requested with
 `--remote-format`: `pdf`, `docx`, `html`, and `segmented-json`.
 
@@ -122,6 +122,41 @@ The provider response JSON is retained as the reusable transcript. No
 `.manifest.json` or `.transcription.lock` sidecar is written. Temporary files
 used for atomic output publication are removed before the command returns,
 including on handled failures.
+
+SRT cue text is written on one line by default so DaVinci Resolve can handle
+the visual wrapping. To insert balanced line breaks into the SRT itself, add
+`--srt-smart-line-breaks`. With `export`, `--max-chars-per-line` and
+`--max-lines` control that optional wrapping:
+
+```powershell
+python .\run_toolkit.py export .\media\interview.json --format srt `
+  --srt-smart-line-breaks --max-chars-per-line 42 --max-lines 2
+```
+
+### Sentence-driven `srt-mini`
+
+`srt-mini` uses only the reusable JSON word timings. No marker file is needed:
+
+```powershell
+python .\run_toolkit.py export .\media\interview.json --format srt-mini
+```
+
+This writes `interview.mini.srt` using deterministic rules without AI:
+
+1. Put each complete sentence in its own cue.
+2. Split a sentence at commas or before Uzbek `yoki` only when every resulting
+   clause contains at least three spoken words and at least 0.8 seconds of
+   natural JSON timing.
+3. Keep short introductions and enumeration fragments together, so isolated
+   words do not become subtitle cues.
+4. Keep at least 100 milliseconds between adjacent cues. If the JSON timing is
+   too tight to fit that gap, join the affected cues instead of losing text or
+   producing an invalid timestamp.
+
+The same `srt-mini` format can be used with `transcribe`, in which case the
+canonical JSON is still written too. Script conversion belongs to `export`;
+add `--script latin` or `--script cyrillic` when desired. Cue text remains on
+one line unless `--srt-smart-line-breaks` is supplied.
 
 ## Paid-call and conflict behavior
 
@@ -151,6 +186,7 @@ default to zero because another attempt can incur another charge.
 --no-verbatim
 --profile NAME
 --pause-detection
+--srt-smart-line-breaks
 --script source|latin|cyrillic
 --clean none|uzbek
 --speaker-labels none|secondary|all

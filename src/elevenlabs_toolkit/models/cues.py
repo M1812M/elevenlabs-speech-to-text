@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .transcript import TranscriptValidationError, Word, join_word_text
@@ -8,6 +9,8 @@ from .transcript import TranscriptValidationError, Word, join_word_text
 @dataclass(frozen=True, slots=True)
 class Cue:
     words: tuple[Word, ...]
+    start_override: float | None = None
+    end_override: float | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.words, (str, bytes)) or not isinstance(self.words, (tuple, list)) or not self.words:
@@ -18,14 +21,22 @@ class Cue:
             if current.start < previous.start:
                 raise TranscriptValidationError("cue words must be ordered by start time")
         object.__setattr__(self, "words", tuple(self.words))
+        natural_start = self.words[0].start
+        natural_end = max(word.end for word in self.words)
+        start = natural_start if self.start_override is None else float(self.start_override)
+        end = natural_end if self.end_override is None else float(self.end_override)
+        if not math.isfinite(start) or start < 0 or not math.isfinite(end) or end < start:
+            raise TranscriptValidationError("cue override timings must be finite and end must be >= start")
+        object.__setattr__(self, "start_override", start if self.start_override is not None else None)
+        object.__setattr__(self, "end_override", end if self.end_override is not None else None)
 
     @property
     def start(self) -> float:
-        return self.words[0].start
+        return self.words[0].start if self.start_override is None else self.start_override
 
     @property
     def end(self) -> float:
-        return max(word.end for word in self.words)
+        return max(word.end for word in self.words) if self.end_override is None else self.end_override
 
     @property
     def duration(self) -> float:

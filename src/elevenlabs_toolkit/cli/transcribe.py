@@ -21,8 +21,8 @@ from .context import CliContext
 
 LOCAL_FORMATS = (
     ArtifactFormat.SRT,
+    ArtifactFormat.SRT_MINI,
     ArtifactFormat.TXT,
-    ArtifactFormat.SOCIAL_SRT,
     ArtifactFormat.RESOLVE_EDL,
     ArtifactFormat.CUE_INDEX_SRT,
 )
@@ -62,6 +62,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument("--pause-detection", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
+        "--srt-smart-line-breaks",
+        action="store_true",
+        help="Balance cue text over multiple lines; default is one text line per cue.",
+    )
+    parser.add_argument(
         "--retries",
         type=int,
         default=0,
@@ -82,7 +87,7 @@ def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, Expo
     formats = tuple(dict.fromkeys((ArtifactFormat.JSON, *requested_formats)))
     timed_formats = {
         ArtifactFormat.SRT,
-        ArtifactFormat.SOCIAL_SRT,
+        ArtifactFormat.SRT_MINI,
         ArtifactFormat.RESOLVE_EDL,
         ArtifactFormat.CUE_INDEX_SRT,
     }
@@ -127,7 +132,13 @@ def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, Expo
         temperature=args.temperature,
         remote_formats=tuple(args.remote_format),
     )
-    export = ExportOptions(formats, args.output_dir, segmentation, text)
+    export = ExportOptions(
+        formats,
+        args.output_dir,
+        segmentation,
+        text,
+        srt_smart_line_breaks=args.srt_smart_line_breaks,
+    )
     return transcription, export, formats
 
 

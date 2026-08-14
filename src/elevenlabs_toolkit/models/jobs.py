@@ -9,9 +9,9 @@ from pathlib import Path
 class ArtifactFormat(str, Enum):
     JSON = "json"
     SRT = "srt"
+    SRT_MINI = "srt-mini"
     TXT = "txt"
     COMBINED_TXT = "combined-txt"
-    SOCIAL_SRT = "social-srt"
     RESOLVE_EDL = "resolve-edl"
     CUE_INDEX_SRT = "cue-index-srt"
     CLEAN_JSON = "clean-json"
@@ -251,6 +251,7 @@ class ExportOptions:
     marker_fps: float = 25.0
     marker_color: str = "ResolveColorBlue"
     marker_prefix: str = "Sentence"
+    srt_smart_line_breaks: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.formats, (str, bytes)) or not isinstance(self.formats, (tuple, list)) or not self.formats:
@@ -263,6 +264,7 @@ class ExportOptions:
             raise ValueError("segmentation must be SegmentationOptions")
         if not isinstance(self.text, TextOptions):
             raise ValueError("text must be TextOptions")
+        _require_bool(self.srt_smart_line_breaks, "srt_smart_line_breaks")
         if not isinstance(self.marker_color, str) or not self.marker_color.strip():
             raise ValueError("marker_color must be a non-empty string")
         if not isinstance(self.marker_prefix, str):
