@@ -40,12 +40,6 @@ class ArtifactStatus(str, Enum):
     FAILED = "failed"
 
 
-class SpeakerLabels(str, Enum):
-    NONE = "none"
-    SECONDARY = "secondary"
-    ALL = "all"
-
-
 def _finite_number(value: object, name: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a finite number, not a boolean")
@@ -105,6 +99,9 @@ class SegmentationOptions:
     pause_detection: bool = False
     max_words: int | None = None
     split_on_speaker_change: bool = True
+    srt_fps: float = 30.0
+    srt_padding_frames: int = 2
+    srt_gap_milliseconds: int = 80
 
     def __post_init__(self) -> None:
         if not isinstance(self.preset, str) or not self.preset.strip():
@@ -117,6 +114,9 @@ class SegmentationOptions:
         hard_gap_seconds = _finite_number(self.hard_gap_seconds, "hard_gap_seconds")
         _require_bool(self.pause_detection, "pause_detection")
         _require_bool(self.split_on_speaker_change, "split_on_speaker_change")
+        srt_fps = _finite_number(self.srt_fps, "srt_fps")
+        srt_padding_frames = _require_int(self.srt_padding_frames, "srt_padding_frames")
+        srt_gap_milliseconds = _require_int(self.srt_gap_milliseconds, "srt_gap_milliseconds")
         if max_chars <= 0 or max_lines <= 0:
             raise ValueError("line limits must be > 0")
         if max_duration <= 0 or min_duration < 0:
@@ -129,24 +129,29 @@ class SegmentationOptions:
             raise ValueError("hard_gap_seconds must be >= gap_seconds")
         if self.max_words is not None and _require_int(self.max_words, "max_words") <= 0:
             raise ValueError("max_words must be > 0")
+        if srt_fps <= 0:
+            raise ValueError("srt_fps must be > 0")
+        if srt_padding_frames < 0:
+            raise ValueError("srt_padding_frames must be >= 0")
+        if srt_gap_milliseconds < 0:
+            raise ValueError("srt_gap_milliseconds must be >= 0")
         object.__setattr__(self, "preset", self.preset.strip())
         object.__setattr__(self, "max_duration", max_duration)
         object.__setattr__(self, "min_duration", min_duration)
         object.__setattr__(self, "gap_seconds", gap_seconds)
         object.__setattr__(self, "hard_gap_seconds", hard_gap_seconds)
+        object.__setattr__(self, "srt_fps", srt_fps)
 
 
 @dataclass(frozen=True, slots=True)
 class TextOptions:
     script: ScriptMode = ScriptMode.SOURCE
     cleanup: str | None = None
-    speaker_labels: SpeakerLabels = SpeakerLabels.NONE
     replacements: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         try:
             script = ScriptMode(self.script)
-            speaker_labels = SpeakerLabels(self.speaker_labels)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid text option: {exc}") from exc
         cleanup = self.cleanup.strip() if isinstance(self.cleanup, str) else self.cleanup
@@ -168,7 +173,6 @@ class TextOptions:
         if invalid:
             raise ValueError("text replacements must use non-empty TOKEN=TOKEN entries")
         object.__setattr__(self, "script", script)
-        object.__setattr__(self, "speaker_labels", speaker_labels)
         object.__setattr__(self, "cleanup", cleanup)
         object.__setattr__(self, "replacements", replacements)
 

@@ -12,11 +12,16 @@ from ..models import (
     ConflictPolicy,
     ExportOptions,
     ScriptMode,
-    SpeakerLabels,
     TranscriptionOptions,
 )
 from ..providers import ElevenLabsProvider
-from .common import add_execution_arguments, add_input_arguments, input_spec
+from .common import (
+    add_execution_arguments,
+    add_input_arguments,
+    add_srt_timing_arguments,
+    input_spec,
+    srt_timing_overrides,
+)
 from .context import CliContext
 
 LOCAL_FORMATS = (
@@ -43,7 +48,6 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile")
     parser.add_argument("--script", choices=[item.value for item in ScriptMode])
     parser.add_argument("--clean", choices=["none", "uzbek"])
-    parser.add_argument("--speaker-labels", choices=[item.value for item in SpeakerLabels])
     parser.add_argument("--replace", action="append", default=None, metavar="TOKEN=TOKEN")
 
     parser.add_argument("--model", default="scribe_v2")
@@ -70,6 +74,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Balance cue text over multiple lines; default is one text line per cue.",
     )
+    add_srt_timing_arguments(parser)
     parser.add_argument(
         "--retries",
         type=int,
@@ -96,12 +101,11 @@ def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, Expo
         ArtifactFormat.CUE_INDEX_SRT,
     }
     overrides: dict[str, object] = {}
+    overrides.update(srt_timing_overrides(args))
     if args.script is not None:
         overrides["text.script"] = args.script
     if args.clean is not None:
         overrides["text.cleanup"] = None if args.clean == "none" else args.clean
-    if args.speaker_labels is not None:
-        overrides["text.speaker_labels"] = args.speaker_labels
     if args.replace is not None:
         overrides["text.replacements"] = args.replace
     if args.pause_detection is not None:

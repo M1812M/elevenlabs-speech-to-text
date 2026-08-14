@@ -12,9 +12,14 @@ from ..models import (
     ConflictPolicy,
     ExportOptions,
     ScriptMode,
-    SpeakerLabels,
 )
-from .common import add_execution_arguments, add_input_arguments, input_spec
+from .common import (
+    add_execution_arguments,
+    add_input_arguments,
+    add_srt_timing_arguments,
+    input_spec,
+    srt_timing_overrides,
+)
 from .context import CliContext
 
 EXPORT_FORMATS = (
@@ -43,7 +48,6 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--script", choices=[item.value for item in ScriptMode], help="Output script; source preserves input."
     )
     parser.add_argument("--clean", choices=["none", "uzbek"], help="Explicit editorial cleanup profile.")
-    parser.add_argument("--speaker-labels", choices=[item.value for item in SpeakerLabels])
     parser.add_argument(
         "--replace",
         action="append",
@@ -59,6 +63,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Balance cue text over multiple lines; default is one text line per cue.",
     )
+    add_srt_timing_arguments(parser)
     parser.add_argument("--max-duration", type=float)
     parser.add_argument("--marker-fps", type=float, default=25.0)
     parser.add_argument("--marker-color", default="ResolveColorBlue")
@@ -71,6 +76,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
 def _options(args: argparse.Namespace) -> ExportOptions:
     overrides: dict[str, object] = {}
+    overrides.update(srt_timing_overrides(args))
     for name in ("max_chars_per_line", "max_lines", "max_duration", "pause_detection"):
         value = getattr(args, name)
         if value is not None:
@@ -79,8 +85,6 @@ def _options(args: argparse.Namespace) -> ExportOptions:
         overrides["text.script"] = args.script
     if args.clean is not None:
         overrides["text.cleanup"] = None if args.clean == "none" else args.clean
-    if args.speaker_labels is not None:
-        overrides["text.speaker_labels"] = args.speaker_labels
     if args.replace is not None:
         overrides["text.replacements"] = args.replace
 

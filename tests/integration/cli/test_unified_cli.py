@@ -100,6 +100,28 @@ def test_export_srt_line_breaks_are_opt_in(tmp_path: Path) -> None:
     assert "\none two\nthree four\n" in (wrapped_output / "sample.srt").read_text(encoding="utf-8")
 
 
+def test_export_accepts_frame_rate_padding_and_gap_overrides(tmp_path: Path) -> None:
+    source = _transcript(tmp_path / "sample.json")
+    output = tmp_path / "out"
+
+    result = _run(
+        "export",
+        str(source),
+        "-o",
+        str(output),
+        "--srt-fps",
+        "60",
+        "--srt-padding-frames",
+        "2",
+        "--srt-gap-ms",
+        "40",
+    )
+
+    assert result.returncode == 0, result.stderr
+    rendered = (output / "sample.srt").read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:00,833" in rendered
+
+
 def test_json_dry_run_is_one_machine_readable_document_and_writes_nothing(tmp_path: Path) -> None:
     source = _transcript(tmp_path / "sample.json")
     output = tmp_path / "out"

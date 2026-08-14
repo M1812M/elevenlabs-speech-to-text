@@ -14,10 +14,12 @@ gap_seconds = 0.9
 hard_gap_seconds = 1.8
 pause_detection = false
 split_on_speaker_change = true
+srt_fps = 30.0
+srt_padding_frames = 2
+srt_gap_milliseconds = 80
 
 [text]
 script = "source"
-speaker_labels = "none"
 replacements = []
 # Literal replacements work without language-specific conversion.
 # replacements = ["Acme=ACME"]
@@ -37,5 +39,4 @@ max_words = 9
 
 [profiles.short-form.text]
 script = "source"
-speaker_labels = "secondary"
 replacements = []

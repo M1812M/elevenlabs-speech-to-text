@@ -42,10 +42,10 @@ def test_complete_sentences_are_separate_and_keep_all_words() -> None:
         "Tug'ruq paytida chaqaloqning bo'yniga kindik o'ralishi ko'p uchraydigan holatdir.",
         "Bu deyarli har uchta tug'ruqdan birida kuzatiladi.",
     ]
-    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+    assert cues[1].start - cues[0].end == pytest.approx(0.08)
 
 
-def test_readable_comma_clauses_are_split() -> None:
+def test_sentence_under_80_characters_is_not_split_at_comma() -> None:
     transcript = _transcript(
         [
             ("Ushbu", 0.0, 0.4),
@@ -61,32 +61,57 @@ def test_readable_comma_clauses_are_split() -> None:
 
     cues = segment_mini(transcript)
 
-    assert [cue.text for cue in cues] == ["Ushbu videoda birinchi qism,", "keyingi muhim qism ko'rsatiladi."]
-    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+    assert [cue.text for cue in cues] == ["Ushbu videoda birinchi qism, keyingi muhim qism ko'rsatiladi."]
 
 
-def test_readable_semicolon_clauses_are_split() -> None:
+def test_speaker_identifier_is_not_part_of_80_character_limit() -> None:
+    payload = {
+        "text": "First complete clause and second complete clause.",
+        "language_code": "eng",
+        "words": [
+            {
+                "type": "word",
+                "text": text,
+                "start": index * 0.4,
+                "end": index * 0.4 + 0.3,
+                "speaker_id": "speaker_identifier_that_must_never_be_rendered_or_measured",
+            }
+            for index, text in enumerate("First complete clause and second complete clause.".split())
+        ],
+    }
+
+    cues = segment_mini(Transcript.from_payload(payload))
+
+    assert [cue.text for cue in cues] == ["First complete clause and second complete clause."]
+
+
+def test_sentence_over_80_characters_is_split_at_semicolon() -> None:
     transcript = _transcript(
         [
             ("First", 0.0, 0.3),
-            ("complete", 0.3, 0.7),
-            ("clause;", 0.7, 1.1),
-            ("second", 1.1, 1.5),
-            ("complete", 1.5, 1.9),
-            ("clause.", 1.9, 2.4),
+            ("extraordinarilylong", 0.3, 0.7),
+            ("complete", 0.7, 1.0),
+            ("clause;", 1.0, 1.3),
+            ("second", 1.3, 1.6),
+            ("exceptionallylong", 1.6, 2.0),
+            ("complete", 2.0, 2.3),
+            ("clause.", 2.3, 2.7),
         ]
     )
 
     cues = segment_mini(transcript)
 
-    assert [cue.text for cue in cues] == ["First complete clause;", "second complete clause."]
-    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+    assert [cue.text for cue in cues] == [
+        "First extraordinarilylong complete clause;",
+        "second exceptionallylong complete clause.",
+    ]
+    assert cues[1].start - cues[0].end == pytest.approx(0.08)
 
 
 def test_split_uses_spoken_character_edges_when_available() -> None:
     transcript = Transcript.from_payload(
         {
-            "text": "First complete clause; second complete clause.",
+            "text": "First extraordinarilylongcomplete clause; second exceptionallylongcomplete clause.",
             "words": [
                 {
                     "type": "word",
@@ -98,7 +123,7 @@ def test_split_uses_spoken_character_edges_when_available() -> None:
                         {"text": "t", "start": 0.30, "end": 0.34},
                     ],
                 },
-                {"type": "word", "text": "complete", "start": 0.4, "end": 0.8},
+                {"type": "word", "text": "extraordinarilylongcomplete", "start": 0.4, "end": 0.8},
                 {
                     "type": "word",
                     "text": "clause;",
@@ -120,7 +145,7 @@ def test_split_uses_spoken_character_edges_when_available() -> None:
                         {"text": "d", "start": 1.70, "end": 1.76},
                     ],
                 },
-                {"type": "word", "text": "complete", "start": 1.8, "end": 2.2},
+                {"type": "word", "text": "exceptionallylongcomplete", "start": 1.8, "end": 2.2},
                 {
                     "type": "word",
                     "text": "clause.",
@@ -138,13 +163,13 @@ def test_split_uses_spoken_character_edges_when_available() -> None:
 
     cues = segment_mini(transcript)
 
-    assert [(cue.start, cue.end) for cue in cues] == [(0.08, 1.14), (1.42, 2.62)]
+    assert [(cue.start, cue.end) for cue in cues] == [(0.013, 1.207), (1.353, 2.687)]
 
 
 def test_semicolon_is_preferred_over_a_competing_comma_split() -> None:
     transcript = _transcript(
         [
-            ("one", 0.0, 0.3),
+            ("oneextremelylongwordindeed", 0.0, 0.3),
             ("two", 0.3, 0.6),
             ("three;", 0.6, 0.9),
             ("verylongword", 0.9, 1.2),
@@ -158,29 +183,34 @@ def test_semicolon_is_preferred_over_a_competing_comma_split() -> None:
     cues = segment_mini(transcript)
 
     assert [cue.text for cue in cues] == [
-        "one two three;",
+        "oneextremelylongwordindeed two three;",
         "verylongword anotherverylongword, six seven eight.",
     ]
 
 
-def test_readable_yoki_clause_starts_a_new_cue() -> None:
+def test_overlong_yoki_clause_starts_a_new_cue() -> None:
     transcript = _transcript(
         [
             ("Kindik", 0.0, 0.4),
             ("bo'sh", 0.4, 0.8),
             ("bo'lishi", 0.8, 1.3),
             ("mumkin", 1.3, 1.8),
-            ("yoki", 1.8, 2.2),
-            ("shifokor", 2.2, 2.7),
-            ("yordam", 2.7, 3.2),
-            ("beradi.", 3.2, 3.8),
+            ("favquloddauzun", 1.8, 2.2),
+            ("tushuntirishbilan", 2.2, 2.7),
+            ("yoki", 2.7, 3.1),
+            ("shifokor", 3.1, 3.5),
+            ("yordam", 3.5, 3.9),
+            ("beradi.", 3.9, 4.4),
         ]
     )
 
     cues = segment_mini(transcript)
 
-    assert [cue.text for cue in cues] == ["Kindik bo'sh bo'lishi mumkin", "yoki shifokor yordam beradi."]
-    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+    assert [cue.text for cue in cues] == [
+        "Kindik bo'sh bo'lishi mumkin favquloddauzun tushuntirishbilan",
+        "yoki shifokor yordam beradi.",
+    ]
+    assert cues[1].start - cues[0].end == pytest.approx(0.08)
 
 
 def test_short_yoki_fragment_stays_with_sentence() -> None:
@@ -196,6 +226,121 @@ def test_short_yoki_fragment_stays_with_sentence() -> None:
     assert [cue.text for cue in segment_mini(transcript)] == ["Tanlang yoki davom eting."]
 
 
+def test_pause_over_one_second_splits_a_short_sentence() -> None:
+    transcript = _transcript(
+        [
+            ("Short", 0.0, 0.3),
+            ("opening", 0.3, 0.7),
+            ("continues", 1.71, 2.1),
+            ("here.", 2.1, 2.5),
+        ]
+    )
+
+    cues = segment_mini(transcript)
+
+    assert [cue.text for cue in cues] == ["Short opening", "continues here."]
+    assert cues[1].start - cues[0].end == pytest.approx(0.876)
+
+
+def test_uzbek_comma_pause_wins_before_the_80_character_rule() -> None:
+    transcript = _transcript(
+        [
+            ("Bir", 227.180, 227.329),
+            ("uchi", 227.460, 227.570),
+            ("mana", 227.680, 227.880),
+            ("bu", 227.960, 228.060),
+            ("yerda,", 228.140, 228.500),
+            ("ikkinchi", 230.400, 230.780),
+            ("uchi", 230.860, 230.970),
+            ("esa", 231.020, 231.300),
+            ("ichkariga", 231.320, 231.730),
+            ("tortilib", 231.940, 232.450),
+            ("ketgan.", 232.480, 232.880),
+        ],
+        "uzb",
+    )
+
+    cues = segment_mini(transcript)
+
+    assert [cue.text for cue in cues] == [
+        "Bir uchi mana bu yerda,",
+        "ikkinchi uchi esa ichkariga tortilib ketgan.",
+    ]
+    assert all(len(cue.text) < 80 for cue in cues)
+    assert cues[1].start - cues[0].end == pytest.approx(1.766)
+
+
+def test_pause_of_exactly_one_second_does_not_split_a_short_sentence() -> None:
+    transcript = _transcript(
+        [
+            ("Short", 0.0, 0.3),
+            ("opening", 0.3, 0.7),
+            ("continues", 1.7, 2.1),
+            ("here.", 2.1, 2.5),
+        ]
+    )
+
+    assert [cue.text for cue in segment_mini(transcript)] == ["Short opening continues here."]
+
+
+def test_pause_does_not_create_a_one_word_fragment() -> None:
+    transcript = _transcript(
+        [
+            ("Opening", 0.0, 0.4),
+            ("continues", 1.5, 1.9),
+            ("safely", 1.9, 2.3),
+            ("here.", 2.3, 2.7),
+        ]
+    )
+
+    assert [cue.text for cue in segment_mini(transcript)] == ["Opening continues safely here."]
+
+
+def test_overlong_connector_does_not_create_a_one_word_fragment() -> None:
+    transcript = _transcript(
+        [
+            ("This", 0.0, 0.3),
+            ("extraordinarilylongexplanation", 0.3, 0.7),
+            ("contains", 0.7, 1.0),
+            ("several", 1.0, 1.3),
+            ("carefullychosen", 1.3, 1.6),
+            ("descriptive", 1.6, 1.9),
+            ("words", 1.9, 2.2),
+            ("and.", 2.2, 2.5),
+        ],
+        "eng",
+    )
+
+    cues = segment_mini(transcript)
+
+    assert len(cues) == 1
+    assert len(cues[0].text) > 80
+
+
+def test_80_character_limit_uses_transformed_output_text() -> None:
+    transcript = _transcript(
+        [
+            ("first", 0.0, 0.4),
+            ("safe", 0.4, 0.8),
+            ("clause", 0.8, 1.2),
+            ("and", 1.2, 1.6),
+            ("second", 1.6, 2.0),
+            ("safe", 2.0, 2.4),
+            ("clause.", 2.4, 2.8),
+        ],
+        "eng",
+    )
+
+    source_cues = segment_mini(transcript)
+    transformed_cues = segment_mini(
+        transcript,
+        lambda text: text.replace("first", "f" * 35).replace("second", "s" * 35),
+    )
+
+    assert len(source_cues) == 1
+    assert [cue.text for cue in transformed_cues] == ["first safe clause", "and second safe clause."]
+
+
 @pytest.mark.parametrize(
     ("language_code", "connector"),
     [
@@ -208,12 +353,12 @@ def test_short_yoki_fragment_stays_with_sentence() -> None:
 def test_four_languages_use_the_same_safe_connector_rule(language_code: str, connector: str) -> None:
     transcript = _transcript(
         [
-            ("first", 0.0, 0.4),
+            ("extraordinarilylongfirst", 0.0, 0.4),
             ("complete", 0.4, 0.9),
             ("safe", 0.9, 1.3),
             ("clause", 1.3, 1.8),
             (connector, 1.8, 2.2),
-            ("second", 2.2, 2.6),
+            ("exceptionallylongsecond", 2.2, 2.6),
             ("complete", 2.6, 3.1),
             ("clause.", 3.1, 3.7),
         ],
@@ -222,8 +367,11 @@ def test_four_languages_use_the_same_safe_connector_rule(language_code: str, con
 
     cues = segment_mini(transcript)
 
-    assert [cue.text for cue in cues] == ["first complete safe clause", f"{connector} second complete clause."]
-    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+    assert [cue.text for cue in cues] == [
+        "extraordinarilylongfirst complete safe clause",
+        f"{connector} exceptionallylongsecond complete clause.",
+    ]
+    assert cues[1].start - cues[0].end == pytest.approx(0.08)
 
 
 @pytest.mark.parametrize(
@@ -240,12 +388,12 @@ def test_four_languages_support_multiword_structure_phrases(
     connector: tuple[str, ...],
 ) -> None:
     items = [
-        ("first", 0.0, 0.4),
+        ("extraordinarilylongfirst", 0.0, 0.4),
         ("complete", 0.4, 0.9),
         ("safe", 0.9, 1.3),
         ("clause", 1.3, 1.8),
         *((word, 1.8 + index * 0.3, 2.1 + index * 0.3) for index, word in enumerate(connector)),
-        ("second", 2.5, 2.9),
+        ("exceptionallylongsecond", 2.5, 2.9),
         ("complete", 2.9, 3.4),
         ("clause.", 3.4, 4.0),
     ]
@@ -253,7 +401,7 @@ def test_four_languages_support_multiword_structure_phrases(
 
     cues = segment_mini(transcript)
 
-    assert cues[0].text == "first complete safe clause"
+    assert cues[0].text == "extraordinarilylongfirst complete safe clause"
     assert cues[1].text.startswith(" ".join(connector))
 
 
@@ -311,13 +459,13 @@ def test_enumeration_does_not_create_single_word_cues() -> None:
     assert " ".join(cue.text for cue in cues) == "Kerakli buyumlar: suv, sovun, sochiq, va qo'lqopdir."
 
 
-def test_existing_silence_longer_than_100ms_is_preserved() -> None:
+def test_existing_silence_allows_full_two_frame_padding() -> None:
     transcript = _transcript([("First.", 0.0, 0.8), ("Second.", 1.2, 2.0)])
 
     cues = segment_mini(transcript)
 
-    assert cues[0].end == 0.8
-    assert cues[1].start == 1.2
+    assert (cues[0].start, cues[0].end) == (0.0, 0.867)
+    assert (cues[1].start, cues[1].end) == (1.133, 2.067)
 
 
 def test_impossibly_short_neighboring_cues_are_merged() -> None:
@@ -328,13 +476,13 @@ def test_impossibly_short_neighboring_cues_are_merged() -> None:
     assert [cue.text for cue in cues] == ["Yes. No."]
 
 
-def test_zero_duration_word_gets_a_valid_millisecond_cue() -> None:
+def test_zero_duration_word_gets_a_valid_padded_cue() -> None:
     transcript = _transcript([("Yes.", 1.0, 1.0)])
 
     cues = segment_mini(transcript)
 
-    assert cues[0].start == 1.0
-    assert cues[0].end == 1.001
+    assert cues[0].start == 0.933
+    assert cues[0].end == 1.068
 
 
 def test_timestamps_are_required() -> None:

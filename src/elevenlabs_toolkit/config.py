@@ -35,7 +35,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
     import tomli as tomllib
 
-from .models import ScriptMode, SegmentationOptions, SpeakerLabels, TextOptions
+from .models import ScriptMode, SegmentationOptions, TextOptions
 
 
 class ConfigurationError(ValueError):
@@ -52,11 +52,13 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "gap_seconds": 0.9,
         "hard_gap_seconds": 1.8,
         "pause_detection": False,
+        "srt_fps": 30.0,
+        "srt_padding_frames": 2,
+        "srt_gap_milliseconds": 80,
     },
     "text": {
         "script": "source",
         "cleanup": None,
-        "speaker_labels": "none",
         "replacements": (),
     },
 }
@@ -223,7 +225,7 @@ def effective_config(
         "text": {
             field.name: (
                 getattr(text, field.name).value
-                if isinstance(getattr(text, field.name), (ScriptMode, SpeakerLabels))
+                if isinstance(getattr(text, field.name), ScriptMode)
                 else list(getattr(text, field.name))
                 if isinstance(getattr(text, field.name), tuple)
                 else getattr(text, field.name)
@@ -450,8 +452,6 @@ def _options_from_mapping(config: Mapping[str, Any], *, context: str) -> tuple[S
     try:
         if "script" in text_values:
             text_values["script"] = ScriptMode(text_values["script"])
-        if "speaker_labels" in text_values:
-            text_values["speaker_labels"] = SpeakerLabels(text_values["speaker_labels"])
         if "replacements" in text_values:
             raw_replacements = text_values["replacements"]
             if not isinstance(raw_replacements, (list, tuple)):

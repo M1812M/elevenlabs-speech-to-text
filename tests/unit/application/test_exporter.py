@@ -10,7 +10,6 @@ from elevenlabs_toolkit.models import (
     ExportOptions,
     ScriptMode,
     SegmentationOptions,
-    SpeakerLabels,
     TextOptions,
     Transcript,
 )
@@ -33,7 +32,6 @@ def test_export_writes_multiple_formats_through_atomic_store(tmp_path: Path) -> 
     options = ExportOptions(
         (ArtifactFormat.SRT, ArtifactFormat.TXT, ArtifactFormat.RESOLVE_EDL),
         tmp_path / "out",
-        text=TextOptions(speaker_labels=SpeakerLabels.ALL),
     )
     plan = plan_exports((source,), options)
 
@@ -43,8 +41,8 @@ def test_export_writes_multiple_formats_through_atomic_store(tmp_path: Path) -> 
     assert result.written == 3
     srt = (tmp_path / "out" / "sample.srt").read_text(encoding="utf-8")
     assert "Salom" in srt and "dunyo." in srt
-    assert "[speaker_0] Salom" in srt
-    assert "[speaker_0] Salom" in (tmp_path / "out" / "sample.txt").read_text(encoding="utf-8")
+    assert "[speaker_" not in srt
+    assert "[speaker_" not in (tmp_path / "out" / "sample.txt").read_text(encoding="utf-8")
     assert "FCM: NON-DROP FRAME" in (tmp_path / "out" / "sample.resolve.edl").read_text(encoding="utf-8")
 
 
@@ -66,8 +64,8 @@ def test_srt_mini_export_uses_json_sentence_timings(tmp_path: Path) -> None:
     assert result.failed == 0
     rendered = (tmp_path / "out" / "sample.mini.srt").read_text(encoding="utf-8")
     assert rendered.count(" --> ") == 2
-    assert "00:00:00,100 --> 00:00:00,355" in rendered
-    assert "00:00:00,455 --> 00:00:01,000" in rendered
+    assert "00:00:00,033 --> 00:00:00,365" in rendered
+    assert "00:00:00,445 --> 00:00:01,067" in rendered
     assert "First." in rendered
     assert "Second sentence." in rendered
 
@@ -159,7 +157,7 @@ def test_transformed_text_length_guides_subtitle_segmentation(tmp_path: Path) ->
     assert all(len(line) <= 5 for line in text_lines)
 
 
-def test_speaker_label_width_guides_subtitle_segmentation(tmp_path: Path) -> None:
+def test_speaker_metadata_never_changes_subtitle_text_or_segmentation(tmp_path: Path) -> None:
     payload = {
         "text": "one two",
         "words": [
@@ -177,38 +175,12 @@ def test_speaker_label_width_guides_subtitle_segmentation(tmp_path: Path) -> Non
             max_duration=10,
             min_duration=0,
         ),
-        text=TextOptions(speaker_labels=SpeakerLabels.ALL),
     )
 
     rendered = render_artifact(ArtifactFormat.SRT, transcript, payload, options)
     text_lines = [line for line in rendered.splitlines() if line and not line.isdigit() and " --> " not in line]
 
-    assert text_lines == ["[spk] one", "[spk] two"]
-
-
-def test_secondary_labels_do_not_split_the_only_speaker(tmp_path: Path) -> None:
-    payload = {
-        "text": "one two",
-        "words": [
-            {"type": "word", "text": "one", "start": 0, "end": 0.2, "speaker_id": "spk"},
-            {"type": "word", "text": "two", "start": 0.3, "end": 0.5, "speaker_id": "spk"},
-        ],
-    }
-    transcript = Transcript.from_payload(payload)
-    options = ExportOptions(
-        (ArtifactFormat.SRT,),
-        tmp_path,
-        segmentation=SegmentationOptions(
-            max_chars_per_line=10,
-            max_lines=1,
-            max_duration=10,
-            min_duration=0,
-        ),
-        text=TextOptions(speaker_labels=SpeakerLabels.SECONDARY),
-    )
-
-    rendered = render_artifact(ArtifactFormat.SRT, transcript, payload, options)
-
+    assert text_lines == ["one two"]
     assert "one two" in rendered
     assert "[spk]" not in rendered
     assert rendered.count(" --> ") == 1
@@ -396,11 +368,11 @@ def test_srt_length_split_uses_spoken_character_edges(tmp_path: Path) -> None:
 
     rendered = render_artifact(ArtifactFormat.SRT, Transcript.from_payload(payload), payload, options)
 
-    assert "00:00:00,100 --> 00:00:00,800" in rendered
-    assert "00:00:01,100 --> 00:00:01,800" in rendered
+    assert "00:00:00,033 --> 00:00:00,867" in rendered
+    assert "00:00:01,033 --> 00:00:01,867" in rendered
 
 
-def test_srt_length_split_enforces_100ms_gap(tmp_path: Path) -> None:
+def test_srt_length_split_enforces_80ms_gap(tmp_path: Path) -> None:
     payload = {
         "text": "abcdefgh ijklmnop",
         "words": [
@@ -421,5 +393,5 @@ def test_srt_length_split_enforces_100ms_gap(tmp_path: Path) -> None:
 
     rendered = render_artifact(ArtifactFormat.SRT, Transcript.from_payload(payload), payload, options)
 
-    assert "00:00:00,000 --> 00:00:00,970" in rendered
-    assert "00:00:01,070 --> 00:00:02,000" in rendered
+    assert "00:00:00,000 --> 00:00:00,980" in rendered
+    assert "00:00:01,060 --> 00:00:02,067" in rendered

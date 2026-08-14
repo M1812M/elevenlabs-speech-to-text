@@ -12,7 +12,6 @@ from .jobs import (
     PlannedArtifact,
     ScriptMode,
     SegmentationOptions,
-    SpeakerLabels,
     TextOptions,
     TranscriptionOptions,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "Segment",
     "SegmentationOptions",
     "Sentence",
-    "SpeakerLabels",
     "TextOptions",
     "Transcript",
     "TranscriptValidationError",

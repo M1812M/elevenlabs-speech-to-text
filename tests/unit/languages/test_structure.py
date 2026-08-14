@@ -4,6 +4,7 @@ from elevenlabs_toolkit.languages import (
     connector_boundaries,
     connector_phrases,
     language_structure,
+    lexical_tokens,
 )
 
 
@@ -52,6 +53,14 @@ def test_missing_language_code_uses_supported_language_union() -> None:
     starters = {phrase[0] for phrase in connector_phrases(None)}
 
     assert {"and", "va", "жана", "и"} <= starters
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["Tug\u2018ruqdan", "Tug\u2019ruqdan", "Tug'ruqdan", "Tug\u02bbruqdan"],
+)
+def test_uzbek_apostrophe_variants_remain_one_lexical_word(word: str) -> None:
+    assert lexical_tokens(word) == (word.casefold(),)
 
 
 @pytest.mark.parametrize(

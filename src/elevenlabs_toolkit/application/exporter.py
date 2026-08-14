@@ -12,14 +12,11 @@ from ..models import (
     ArtifactResult,
     ArtifactStatus,
     ConflictPolicy,
-    Cue,
     ExportOptions,
     JobPlan,
     JobResult,
     ScriptMode,
-    SpeakerLabels,
     Transcript,
-    Word,
 )
 from ..renderers import render_cue_index_srt, render_resolve_edl, render_srt, render_txt
 from ..segmentation import segment_mini, segment_standard, sentences_from_transcript
@@ -96,26 +93,6 @@ def _text_transform(options: ExportOptions, transcript: Transcript) -> Callable[
     return transform
 
 
-def _subtitle_measurement(
-    transcript: Transcript,
-    options: ExportOptions,
-) -> tuple[Callable[[tuple[Word, ...]], str] | None, str | None]:
-    labels = options.text.speaker_labels
-    timed_words = transcript.timed_words
-    main_speaker = Cue(timed_words).speaker if timed_words else None
-    if labels is SpeakerLabels.NONE or main_speaker is None:
-        return None, main_speaker
-
-    def prefix(words: tuple[Word, ...]) -> str:
-        speaker = Cue(words).speaker
-        should_label = bool(speaker) and (
-            labels is SpeakerLabels.ALL or (labels is SpeakerLabels.SECONDARY and speaker != main_speaker)
-        )
-        return "x" * len(f"[{speaker}] ") if should_label else ""
-
-    return prefix, main_speaker
-
-
 def render_artifact(
     artifact_format: ArtifactFormat,
     transcript: Transcript,
@@ -136,33 +113,45 @@ def render_artifact(
 
     if artifact_format is ArtifactFormat.SRT:
         transform = _text_transform(options, transcript)
-        text_prefix, main_speaker = _subtitle_measurement(transcript, options)
-        segmented = segment_standard(transcript, segmentation, transform, text_prefix)
-        cues = cues_with_precise_gaps(cue.words for cue in segmented)
+        segmented = segment_standard(transcript, segmentation, transform)
+        cues = cues_with_precise_gaps(
+            (cue.words for cue in segmented),
+            frames_per_second=segmentation.srt_fps,
+            padding_frames=segmentation.srt_padding_frames,
+            minimum_gap_milliseconds=segmentation.srt_gap_milliseconds,
+        )
         return render_srt(
             cues,
             text_transform=transform,
             max_chars_per_line=segmentation.max_chars_per_line,
             max_lines=segmentation.max_lines,
             smart_line_breaks=options.srt_smart_line_breaks,
-            speaker_labels=options.text.speaker_labels,
-            main_speaker=main_speaker,
         )
     if artifact_format is ArtifactFormat.SRT_MINI:
         transform = _text_transform(options, transcript)
-        text_prefix, main_speaker = _subtitle_measurement(transcript, options)
-        cues = segment_mini(transcript)
+        cues = segment_mini(
+            transcript,
+            transform,
+            srt_fps=segmentation.srt_fps,
+            srt_padding_frames=segmentation.srt_padding_frames,
+            srt_gap_milliseconds=segmentation.srt_gap_milliseconds,
+        )
         return render_srt(
             cues,
             text_transform=transform,
             max_chars_per_line=segmentation.max_chars_per_line,
             max_lines=segmentation.max_lines,
             smart_line_breaks=options.srt_smart_line_breaks,
-            speaker_labels=options.text.speaker_labels,
-            main_speaker=main_speaker,
         )
     if artifact_format is ArtifactFormat.CUE_INDEX_SRT:
-        return render_cue_index_srt(segment_standard(transcript, segmentation))
+        segmented = segment_standard(transcript, segmentation)
+        cues = cues_with_precise_gaps(
+            (cue.words for cue in segmented),
+            frames_per_second=segmentation.srt_fps,
+            padding_frames=segmentation.srt_padding_frames,
+            minimum_gap_milliseconds=segmentation.srt_gap_milliseconds,
+        )
+        return render_cue_index_srt(cues)
     if artifact_format is ArtifactFormat.RESOLVE_EDL:
         return render_resolve_edl(
             segment_standard(transcript, segmentation),
@@ -180,7 +169,6 @@ def render_artifact(
         )
         return render_txt(
             [(sentence.text, sentence.speaker) for sentence in sentences],
-            speaker_labels=options.text.speaker_labels,
         )
     if artifact_format is ArtifactFormat.CLEAN_JSON:
         if options.text.cleanup != "uzbek":
@@ -267,7 +255,6 @@ def execute_export(
                 sections.append(
                     render_txt(
                         [(sentence.text, sentence.speaker) for sentence in sentences],
-                        speaker_labels=options.text.speaker_labels,
                         include_source=source.name,
                     ).rstrip()
                 )

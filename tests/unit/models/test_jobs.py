@@ -31,6 +31,14 @@ def test_character_timestamps_are_the_transcription_default() -> None:
     assert TranscriptionOptions().timestamps_granularity == "character"
 
 
+def test_srt_timing_defaults_use_two_frames_at_30fps_and_80ms_gap() -> None:
+    options = SegmentationOptions()
+
+    assert options.srt_fps == 30.0
+    assert options.srt_padding_frames == 2
+    assert options.srt_gap_milliseconds == 80
+
+
 def test_job_result_exposes_stable_counts_and_exit_code() -> None:
     artifact = PlannedArtifact(Path("in.json"), Path("out.srt"), ArtifactFormat.SRT)
     result = JobResult(
@@ -55,6 +63,9 @@ def test_job_result_exposes_stable_counts_and_exit_code() -> None:
         {"gap_seconds": float("nan")},
         {"max_duration": float("inf")},
         {"preset": None},
+        {"srt_fps": 0},
+        {"srt_padding_frames": -1},
+        {"srt_gap_milliseconds": -1},
     ],
 )
 def test_segmentation_rejects_wrongly_typed_or_nonfinite_values(kwargs: dict) -> None:

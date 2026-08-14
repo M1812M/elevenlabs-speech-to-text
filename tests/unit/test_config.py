@@ -33,7 +33,7 @@ def test_builtin_profiles_produce_typed_options_without_reading_files() -> None:
 def test_effective_config_merges_all_layers_in_documented_order() -> None:
     user = {
         "segmentation": {"max_lines": 3, "gap_seconds": 1.0},
-        "text": {"speaker_labels": "secondary"},
+        "text": {"replacements": ["foo=bar"]},
         "profiles": {"social": {"segmentation": {"max_duration": 3.1}}},
     }
     project = {
@@ -61,8 +61,7 @@ def test_effective_config_merges_all_layers_in_documented_order() -> None:
     assert effective["text"] == {
         "script": "latin",
         "cleanup": "uzbek",
-        "speaker_labels": "secondary",
-        "replacements": [],
+        "replacements": ["foo=bar"],
     }
 
 
@@ -72,7 +71,7 @@ def test_project_profile_selection_and_custom_profile() -> None:
         "profiles": {
             "interview": {
                 "segmentation": {"max_duration": 4.0},
-                "text": {"speaker_labels": "all"},
+                "text": {"script": "cyrillic"},
             }
         },
     }
@@ -83,7 +82,7 @@ def test_project_profile_selection_and_custom_profile() -> None:
     assert effective["profile"] == "interview"
     assert segmentation.preset == "interview"
     assert segmentation.max_duration == 4.0
-    assert text.speaker_labels.value == "all"
+    assert text.script is ScriptMode.CYRILLIC
     assert config.available_profiles(raw)[-1] == "interview"
 
 
@@ -156,6 +155,23 @@ def test_missing_optional_config_files_leave_defaults(tmp_path: Path, monkeypatc
     assert effective["text"]["script"] == "source"
 
 
+def test_project_config_can_override_srt_frame_padding_and_gap() -> None:
+    effective = config.effective_config(
+        user_config={},
+        project_config={
+            "segmentation": {
+                "srt_fps": 60,
+                "srt_padding_frames": 3,
+                "srt_gap_milliseconds": 40,
+            }
+        },
+    )
+
+    assert effective["segmentation"]["srt_fps"] == 60.0
+    assert effective["segmentation"]["srt_padding_frames"] == 3
+    assert effective["segmentation"]["srt_gap_milliseconds"] == 40
+
+
 def test_tomllib_unavailable_has_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_file = tmp_path / "elevenlabs-toolkit.toml"
     config_file.write_text("[text]\nscript = 'source'\n", encoding="utf-8")
@@ -174,6 +190,7 @@ def test_tomllib_unavailable_has_clear_error(tmp_path: Path, monkeypatch: pytest
         ({"segmentation": {"gap_seconds": float("nan")}}, "finite"),
         ({"text": {"script": "runic"}}, "runic"),
         ({"text": {"cleanup": "typo"}}, "cleanup"),
+        ({"text": {"speaker_labels": "all"}}, "unknown option"),
         ({"profiles": []}, "profiles must be a table"),
     ],
 )

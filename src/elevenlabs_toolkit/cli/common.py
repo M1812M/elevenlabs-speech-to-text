@@ -74,3 +74,30 @@ def add_execution_arguments(
         help="Print the complete path/conflict/API plan without writing files or calling APIs.",
     )
     parser.add_argument("--fail-fast", action="store_true", help="Stop the batch after the first failed source.")
+
+
+def add_srt_timing_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--srt-fps",
+        type=float,
+        help="Frame rate used for SRT padding (default: 30).",
+    )
+    parser.add_argument(
+        "--srt-padding-frames",
+        type=int,
+        help="Frames added before and after each SRT cue (default: 2).",
+    )
+    parser.add_argument(
+        "--srt-gap-ms",
+        type=int,
+        help="Minimum gap between adjacent SRT cues in milliseconds (default: 80).",
+    )
+
+
+def srt_timing_overrides(args: argparse.Namespace) -> dict[str, object]:
+    mapping = {
+        "srt_fps": args.srt_fps,
+        "srt_padding_frames": args.srt_padding_frames,
+        "srt_gap_milliseconds": args.srt_gap_ms,
+    }
+    return {f"segmentation.{name}": value for name, value in mapping.items() if value is not None}

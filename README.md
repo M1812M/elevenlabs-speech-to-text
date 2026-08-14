@@ -156,16 +156,19 @@ present but unsupported language code gets no language-specific split rules.
 The phrase remains at the beginning of the new cue.
 
 1. Put each complete sentence in its own cue.
-2. Split a sentence at semicolons, commas, or before a matching structural
-   phrase only when every resulting clause contains at least three spoken words
-   and at least 0.8 seconds of natural JSON timing. Semicolons take precedence
-   over competing comma splits; sentence-ending punctuation remains a hard
-   boundary.
-3. Keep short introductions and enumeration fragments together, so isolated
-   words do not become subtitle cues.
-4. Keep at least 100 milliseconds between adjacent cues. If the JSON timing is
-   too tight to fit that gap, join the affected cues instead of losing text or
-   producing an invalid timestamp.
+2. Within a sentence, split at a natural spoken pause longer than 1.0 second,
+   using character timings when present and word timings as the fallback. A
+   pause split must leave at least two spoken words on both sides.
+3. Leave the resulting cue intact when it contains at most 80 characters.
+4. For a cue over 80 characters, split first at a semicolon, otherwise at a
+   comma, otherwise before a matching structural phrase. Both sides must retain
+   at least two spoken words. Within the same priority, prefer the most balanced
+   split and repeat the check for any still-overlong result.
+5. If no safe boundary exists, leave the overlong cue intact for manual review
+   instead of creating an isolated word or cutting at an arbitrary position.
+6. Keep at least 80 milliseconds between adjacent cues. Reduce frame padding
+   first when space is tight, then adjust both cue boundaries evenly if the
+   spoken edges themselves are closer. Join only when no valid cue pair fits.
 
 The same `srt-mini` format can be used with `transcribe`, in which case the
 canonical JSON is still written too. Script conversion belongs to `export`;
@@ -205,17 +208,36 @@ default to zero because another attempt can incur another charge.
 --profile NAME
 --pause-detection
 --srt-smart-line-breaks
+--srt-fps FPS
+--srt-padding-frames FRAMES
+--srt-gap-ms MILLISECONDS
 --script source|latin|cyrillic
 --clean none|uzbek
---speaker-labels none|secondary|all
 --replace TOKEN=TOKEN
 ```
 
 Timed outputs require word or character timestamps. Character timestamps are
-the default and give generated SRT cue boundaries the precise first and last
-spoken-character times. Word times remain the fallback for older JSON files.
-Adjacent SRT cues retain a minimum gap of 100 milliseconds. Pause detection
+the default. Generated SRT cues start two frames before the first spoken
+character and end two frames after the last spoken character; word times remain
+the fallback for older JSON files. The default timing frame rate is 30 fps, so
+two frames add about 67 milliseconds on each side. At 60 fps, the same setting
+adds about 33 milliseconds. Adjacent SRT cues retain a minimum gap of 80
+milliseconds, reducing the available padding when necessary. Pause detection
 also requires character timestamps.
+
+The defaults can be changed per command, for example:
+
+```powershell
+python .\run_toolkit.py export .\media --format srt-mini --srt-fps 60 --srt-padding-frames 2 --srt-gap-ms 80
+```
+
+They can also be stored under `[segmentation]` in
+`elevenlabs-toolkit.toml` as `srt_fps`, `srt_padding_frames`, and
+`srt_gap_milliseconds`.
+
+Speaker metadata remains available in the JSON, but SRT and TXT exports never
+add speaker prefixes. Consequently, speaker identifiers are not part of any
+subtitle character limit.
 
 ## Other commands
 

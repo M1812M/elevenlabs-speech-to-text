@@ -34,13 +34,12 @@ def _effective_word(word: Word, pause_detection: bool) -> tuple[Word, bool]:
 def _text(
     words: list[Word] | tuple[Word, ...],
     text_transform: Callable[[str], str] | None = None,
-    text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> str:
     word_tuple = tuple(words)
     text = Cue(word_tuple).text if word_tuple else ""
     if text and text_transform is not None:
         text = text_transform(text)
-    return f"{text_prefix(word_tuple) if text and text_prefix is not None else ''}{text}"
+    return text
 
 
 def _wrapped_line_count(text: str, width: int) -> int:
@@ -67,11 +66,10 @@ def _fits(
     words: list[Word],
     options: SegmentationOptions,
     text_transform: Callable[[str], str] | None = None,
-    text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> bool:
     if not words:
         return True
-    if _wrapped_line_count(_text(words, text_transform, text_prefix), options.max_chars_per_line) > options.max_lines:
+    if _wrapped_line_count(_text(words, text_transform), options.max_chars_per_line) > options.max_lines:
         return False
     if _group_end(words) - words[0].start > options.max_duration:
         return False
@@ -90,7 +88,6 @@ def _merge_and_rebalance(
     groups: list[list[Word]],
     options: SegmentationOptions,
     text_transform: Callable[[str], str] | None = None,
-    text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> tuple[Cue, ...]:
     merged: list[list[Word]] = []
     for group in groups:
@@ -98,11 +95,7 @@ def _merge_and_rebalance(
             candidate = [*merged[-1], *group]
             speaker_safe = not _speaker_changed(merged[-1][-1], group[0], options)
             boundary_gap = max(0.0, group[0].start - _group_end(merged[-1]))
-            if (
-                boundary_gap <= options.gap_seconds
-                and speaker_safe
-                and _fits(candidate, options, text_transform, text_prefix)
-            ):
+            if boundary_gap <= options.gap_seconds and speaker_safe and _fits(candidate, options, text_transform):
                 merged[-1] = candidate
                 continue
         merged.append(group)
@@ -116,7 +109,7 @@ def _merge_and_rebalance(
             if (
                 boundary_gap <= options.gap_seconds
                 and not _speaker_changed(previous[-1], group[0], options)
-                and _fits(candidate, options, text_transform, text_prefix)
+                and _fits(candidate, options, text_transform)
             ):
                 rebalanced[-1] = previous[:-1]
                 rebalanced.append(candidate)
@@ -129,7 +122,6 @@ def segment_standard(
     transcript: Transcript,
     options: SegmentationOptions,
     text_transform: Callable[[str], str] | None = None,
-    text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> tuple[Cue, ...]:
     prepared = [_effective_word(word, options.pause_detection) for word in transcript.timed_words]
     groups: list[list[Word]] = []
@@ -149,10 +141,10 @@ def segment_standard(
 
         if current:
             candidate = [*current, word]
-            punctuation_break = len(_text(current, text_transform, text_prefix)) >= 28 and HARD_END_RE.search(
-                _text(current, text_transform, text_prefix)
+            punctuation_break = len(_text(current, text_transform)) >= 28 and HARD_END_RE.search(
+                _text(current, text_transform)
             )
-            if not _fits(candidate, options, text_transform, text_prefix) or punctuation_break:
+            if not _fits(candidate, options, text_transform) or punctuation_break:
                 groups.append(current)
                 current = []
 
@@ -161,14 +153,13 @@ def segment_standard(
 
     if current:
         groups.append(current)
-    return _merge_and_rebalance(groups, options, text_transform, text_prefix)
+    return _merge_and_rebalance(groups, options, text_transform)
 
 
 def segment_social(
     transcript: Transcript,
     options: SegmentationOptions,
     text_transform: Callable[[str], str] | None = None,
-    text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> tuple[Cue, ...]:
     prepared = [_effective_word(word, options.pause_detection) for word in transcript.timed_words]
     groups: list[list[Word]] = []
@@ -187,13 +178,13 @@ def segment_social(
                 current = []
 
         candidate = [*current, word]
-        if current and not _fits(candidate, options, text_transform, text_prefix):
+        if current and not _fits(candidate, options, text_transform):
             groups.append(current)
             current = [word]
         else:
             current = candidate
 
-        current_text = _text(current, text_transform, text_prefix)
+        current_text = _text(current, text_transform)
         if HARD_END_RE.search(current_text) or (
             SOFT_END_RE.search(current_text)
             and (
@@ -208,15 +199,14 @@ def segment_social(
 
     if current:
         groups.append(current)
-    return _merge_and_rebalance(groups, options, text_transform, text_prefix)
+    return _merge_and_rebalance(groups, options, text_transform)
 
 
 def segment_transcript(
     transcript: Transcript,
     options: SegmentationOptions,
     text_transform: Callable[[str], str] | None = None,
-    text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> tuple[Cue, ...]:
     if options.preset == "social":
-        return segment_social(transcript, options, text_transform, text_prefix)
-    return segment_standard(transcript, options, text_transform, text_prefix)
+        return segment_social(transcript, options, text_transform)
+    return segment_standard(transcript, options, text_transform)

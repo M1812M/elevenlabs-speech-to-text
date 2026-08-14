@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Callable, Sequence
 from functools import cache
 
-from ..models import Cue, SpeakerLabels
+from ..models import Cue
 from .timecode import srt_timestamp
 
 DEFAULT_MAX_CHARS_PER_LINE = 42
@@ -124,8 +123,6 @@ def render_srt(
     text_transform: Callable[[str], str] | None = None,
     max_chars_per_line: int = DEFAULT_MAX_CHARS_PER_LINE,
     max_lines: int = DEFAULT_MAX_LINES,
-    speaker_labels: SpeakerLabels = SpeakerLabels.NONE,
-    main_speaker: str | None = None,
     smart_line_breaks: bool = False,
 ) -> str:
     """Render timed cues as SubRip text without performing filesystem I/O.
@@ -138,20 +135,11 @@ def render_srt(
     if not isinstance(smart_line_breaks, bool):
         raise TypeError("smart_line_breaks must be a boolean")
 
-    labels = SpeakerLabels(speaker_labels)
-    if main_speaker is None:
-        speaker_counts = Counter(cue.speaker for cue in cues if cue.speaker)
-        main_speaker = max(speaker_counts, key=speaker_counts.__getitem__) if speaker_counts else None
     blocks: list[str] = []
     for index, cue in enumerate(cues, start=1):
         text = cue.text
         if text_transform is not None:
             text = text_transform(text)
-        should_label = bool(cue.speaker) and (
-            labels is SpeakerLabels.ALL or (labels is SpeakerLabels.SECONDARY and cue.speaker != main_speaker)
-        )
-        if should_label:
-            text = f"[{cue.speaker}] {text}"
         body = wrap_text_lossless(text, max_chars_per_line, max_lines) if smart_line_breaks else _inline_text(text)
         blocks.append(_render_block(index, cue, body))
     return "\n\n".join(blocks) + ("\n" if blocks else "")

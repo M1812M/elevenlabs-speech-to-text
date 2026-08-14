@@ -4,7 +4,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-LEXICAL_WORD_RE = re.compile(r"\w+(?:['\u2019\u02bb\u02bc-]\w+)*", re.UNICODE)
+LEXICAL_WORD_RE = re.compile(r"\w+(?:['\u2018\u2019\u02bb\u02bc-]\w+)*", re.UNICODE)
 
 
 @dataclass(frozen=True, slots=True)
