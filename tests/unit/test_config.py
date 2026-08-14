@@ -14,13 +14,11 @@ def test_builtin_profiles_produce_typed_options_without_reading_files() -> None:
         "standard",
         "social",
         "broadcast",
-        "social-uzbek",
     )
 
     standard_segmentation, standard_text = config.profile_options("standard")
     social_segmentation, social_text = config.profile_options("social")
     broadcast_segmentation, _ = config.profile_options("broadcast")
-    uzbek_segmentation, uzbek_text = config.profile_options("social-uzbek")
 
     assert isinstance(standard_segmentation, SegmentationOptions)
     assert isinstance(standard_text, TextOptions)
@@ -30,9 +28,6 @@ def test_builtin_profiles_produce_typed_options_without_reading_files() -> None:
     assert social_segmentation.max_words == 9
     assert social_text.cleanup is None
     assert broadcast_segmentation.max_duration > standard_segmentation.max_duration
-    assert uzbek_segmentation.preset == "social-uzbek"
-    assert uzbek_text.cleanup == "uzbek"
-    assert uzbek_text.script is ScriptMode.SOURCE
 
 
 def test_effective_config_merges_all_layers_in_documented_order() -> None:

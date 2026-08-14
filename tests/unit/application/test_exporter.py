@@ -285,21 +285,141 @@ def test_txt_sentence_boundaries_follow_final_replacements(
     assert rendered.splitlines() == expected
 
 
-def test_cyrillic_uzbek_marker_breaks_text_sentence(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("language_code", "first", "connector", "second"),
+    [
+        ("eng", "First", ("and",), "second"),
+        ("uzb", "Avval", ("shuning", "uchun"), "davom"),
+        ("kir", "Биринчи", ("андан", "кийин"), "экинчи"),
+        ("rus", "Первый", ("потому", "что"), "второй"),
+    ],
+)
+def test_language_connector_and_gap_break_txt_sentence(
+    tmp_path: Path,
+    language_code: str,
+    first: str,
+    connector: tuple[str, ...],
+    second: str,
+) -> None:
+    connector_words = [
+        {"type": "word", "text": word, "start": 1.2 + index * 0.3, "end": 1.5 + index * 0.3}
+        for index, word in enumerate(connector)
+    ]
     payload = {
-        "text": "аввал кейин давом",
+        "language_code": language_code,
+        "text": " ".join((first, *connector, second)),
         "words": [
-            {"type": "word", "text": "аввал", "start": 0, "end": 0.2},
-            {"type": "word", "text": "кейин", "start": 1.2, "end": 1.5},
-            {"type": "word", "text": "давом", "start": 1.6, "end": 1.9},
+            {"type": "word", "text": first, "start": 0, "end": 0.2},
+            *connector_words,
+            {"type": "word", "text": second, "start": 2.0, "end": 2.3},
+        ],
+    }
+    options = ExportOptions((ArtifactFormat.TXT,), tmp_path)
+
+    rendered = render_artifact(ArtifactFormat.TXT, Transcript.from_payload(payload), payload, options)
+
+    assert rendered.splitlines() == [first, " ".join((*connector, second))]
+
+
+def test_neutral_russian_replacement_does_not_use_uzbek_transliteration(tmp_path: Path) -> None:
+    payload = {
+        "language_code": "rus",
+        "text": "Привет мир",
+        "words": [
+            {"type": "word", "text": "Привет", "start": 0, "end": 0.3},
+            {"type": "word", "text": "мир", "start": 0.4, "end": 0.7},
         ],
     }
     options = ExportOptions(
         (ArtifactFormat.TXT,),
         tmp_path,
-        text=TextOptions(cleanup="uzbek"),
+        text=TextOptions(replacements=("мир=МИР",)),
     )
 
     rendered = render_artifact(ArtifactFormat.TXT, Transcript.from_payload(payload), payload, options)
 
-    assert rendered.splitlines() == ["Аввал", "Кейин давом"]
+    assert rendered.strip() == "Привет МИР"
+
+
+def test_uzbek_script_conversion_rejects_known_non_uzbek_transcript(tmp_path: Path) -> None:
+    payload = {
+        "language_code": "rus",
+        "text": "Привет.",
+        "words": [{"type": "word", "text": "Привет.", "start": 0, "end": 0.5}],
+    }
+    options = ExportOptions(
+        (ArtifactFormat.SRT,),
+        tmp_path,
+        text=TextOptions(script=ScriptMode.LATIN),
+    )
+
+    with pytest.raises(ExportError, match="Uzbek-only"):
+        render_artifact(ArtifactFormat.SRT, Transcript.from_payload(payload), payload, options)
+
+
+def test_srt_length_split_uses_spoken_character_edges(tmp_path: Path) -> None:
+    payload = {
+        "text": "abcdefgh ijklmnop",
+        "words": [
+            {
+                "type": "word",
+                "text": "abcdefgh",
+                "start": 0.0,
+                "end": 1.0,
+                "characters": [
+                    {"text": "a", "start": 0.1, "end": 0.2},
+                    {"text": "h", "start": 0.7, "end": 0.8},
+                ],
+            },
+            {
+                "type": "word",
+                "text": "ijklmnop",
+                "start": 1.0,
+                "end": 2.0,
+                "characters": [
+                    {"text": "i", "start": 1.1, "end": 1.2},
+                    {"text": "p", "start": 1.7, "end": 1.8},
+                ],
+            },
+        ],
+    }
+    options = ExportOptions(
+        (ArtifactFormat.SRT,),
+        tmp_path,
+        segmentation=SegmentationOptions(
+            max_chars_per_line=8,
+            max_lines=1,
+            max_duration=10,
+            min_duration=0,
+        ),
+    )
+
+    rendered = render_artifact(ArtifactFormat.SRT, Transcript.from_payload(payload), payload, options)
+
+    assert "00:00:00,100 --> 00:00:00,800" in rendered
+    assert "00:00:01,100 --> 00:00:01,800" in rendered
+
+
+def test_srt_length_split_enforces_100ms_gap(tmp_path: Path) -> None:
+    payload = {
+        "text": "abcdefgh ijklmnop",
+        "words": [
+            {"type": "word", "text": "abcdefgh", "start": 0.0, "end": 1.0},
+            {"type": "word", "text": "ijklmnop", "start": 1.04, "end": 2.0},
+        ],
+    }
+    options = ExportOptions(
+        (ArtifactFormat.SRT,),
+        tmp_path,
+        segmentation=SegmentationOptions(
+            max_chars_per_line=8,
+            max_lines=1,
+            max_duration=10,
+            min_duration=0,
+        ),
+    )
+
+    rendered = render_artifact(ArtifactFormat.SRT, Transcript.from_payload(payload), payload, options)
+
+    assert "00:00:00,000 --> 00:00:00,970" in rendered
+    assert "00:00:01,070 --> 00:00:02,000" in rendered

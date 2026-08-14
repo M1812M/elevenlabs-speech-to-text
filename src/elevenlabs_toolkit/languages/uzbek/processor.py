@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...models import ScriptMode
-from .cleanup import _replacement_parts, apply_replacements, clean_text, clean_token
+from ..replacements import apply_replacements, replacement_parts
+from .cleanup import clean_text, clean_token
 from .transliteration import to_cyrillic, to_latin
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04ff]")
@@ -22,7 +23,7 @@ def _protect_literal_replacements(
     if not replacements:
         return text, ()
 
-    parts = tuple(_replacement_parts(entry) for entry in replacements)
+    parts = tuple(replacement_parts(entry) for entry in replacements)
     occupied = text + "".join(source + target for source, target in parts)
     protected: list[tuple[str, str]] = []
     value = text

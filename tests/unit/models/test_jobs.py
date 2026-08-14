@@ -27,6 +27,10 @@ def test_option_constraints_fail_early() -> None:
         TranscriptionOptions(num_speakers=33)
 
 
+def test_character_timestamps_are_the_transcription_default() -> None:
+    assert TranscriptionOptions().timestamps_granularity == "character"
+
+
 def test_job_result_exposes_stable_counts_and_exit_code() -> None:
     artifact = PlannedArtifact(Path("in.json"), Path("out.srt"), ArtifactFormat.SRT)
     result = JobResult(

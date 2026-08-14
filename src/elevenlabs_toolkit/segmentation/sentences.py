@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Callable, Set
+from collections.abc import Callable
 
+from ..languages import connector_boundaries
 from ..models import SegmentationOptions, Sentence, Transcript, Word
 from .subtitles import _effective_word
 
@@ -35,8 +36,6 @@ def sentences_from_transcript(
     transcript: Transcript,
     options: SegmentationOptions,
     *,
-    marker_breaks: Set[str] = frozenset(),
-    marker_normalizer: Callable[[str], str] | None = None,
     text_transform: Callable[[str], str] | None = None,
 ) -> tuple[Sentence, ...]:
     if not transcript.timed_words:
@@ -46,6 +45,10 @@ def sentences_from_transcript(
     result: list[Sentence] = []
     current: list[Word] = []
     previous_pause = False
+    connector_breaks = connector_boundaries(
+        tuple(word.text for word in transcript.timed_words),
+        transcript.language_code,
+    )
 
     def flush() -> None:
         nonlocal current
@@ -58,15 +61,13 @@ def sentences_from_transcript(
                 result.append(Sentence(text, _dominant_speaker(current)))
         current = []
 
-    for raw_word in transcript.timed_words:
+    for index, raw_word in enumerate(transcript.timed_words):
         word, pause_after = _effective_word(raw_word, options.pause_detection)
         if current:
             gap = max(0.0, word.start - max(item.end for item in current))
-            marker_text = marker_normalizer(word.text) if marker_normalizer is not None else word.text
-            marker = re.sub(r"[^\w'\u2018\u2019]", "", marker_text).casefold()
             if (
                 gap >= options.hard_gap_seconds
-                or (gap >= options.gap_seconds and marker in marker_breaks)
+                or (gap >= options.gap_seconds and index in connector_breaks)
                 or (previous_pause and gap >= min(options.gap_seconds, 0.6))
                 or (
                     options.split_on_speaker_change

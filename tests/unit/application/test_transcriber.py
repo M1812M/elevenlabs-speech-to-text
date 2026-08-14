@@ -9,11 +9,36 @@ from elevenlabs_toolkit.application import execute_transcription, plan_transcrip
 from elevenlabs_toolkit.models import ArtifactFormat, ConflictPolicy, ExportOptions, TranscriptionOptions
 from elevenlabs_toolkit.providers import ProviderTransientError
 
-PAYLOAD = {
+WORD_PAYLOAD = {
     "text": "hello world",
     "words": [
         {"type": "word", "text": "hello", "start": 0, "end": 0.3},
         {"type": "word", "text": "world", "start": 0.4, "end": 0.8},
+    ],
+}
+PAYLOAD = {
+    "text": "hello world",
+    "words": [
+        {
+            "type": "word",
+            "text": "hello",
+            "start": 0,
+            "end": 0.3,
+            "characters": [
+                {"text": "h", "start": 0, "end": 0.06},
+                {"text": "o", "start": 0.24, "end": 0.3},
+            ],
+        },
+        {
+            "type": "word",
+            "text": "world",
+            "start": 0.4,
+            "end": 0.8,
+            "characters": [
+                {"text": "w", "start": 0.4, "end": 0.48},
+                {"text": "d", "start": 0.72, "end": 0.8},
+            ],
+        },
     ],
 }
 
@@ -75,8 +100,20 @@ def test_replace_policy_always_requests_a_fresh_transcription(tmp_path: Path) ->
         {
             "text": "fresh text",
             "words": [
-                {"type": "word", "text": "fresh", "start": 0, "end": 0.3},
-                {"type": "word", "text": "text", "start": 0.4, "end": 0.8},
+                {
+                    "type": "word",
+                    "text": "fresh",
+                    "start": 0,
+                    "end": 0.3,
+                    "characters": [{"text": "f", "start": 0, "end": 0.1}],
+                },
+                {
+                    "type": "word",
+                    "text": "text",
+                    "start": 0.4,
+                    "end": 0.8,
+                    "characters": [{"text": "t", "start": 0.4, "end": 0.5}],
+                },
             ],
         }
     )
@@ -191,7 +228,7 @@ def test_untimed_provider_words_can_render_plain_text(tmp_path: Path) -> None:
     [
         (TranscriptionOptions(), {"message": "queued", "request_id": "request-1"}),
         (TranscriptionOptions(), {"text": "hello", "words": []}),
-        (TranscriptionOptions(timestamps_granularity="character"), PAYLOAD),
+        (TranscriptionOptions(timestamps_granularity="character"), WORD_PAYLOAD),
         (TranscriptionOptions(remote_formats=("pdf",)), PAYLOAD),
     ],
 )

@@ -21,18 +21,18 @@ def test_sentence_segmentation_uses_punctuation_and_dominant_speaker() -> None:
 def test_marker_and_gap_can_split_unpunctuated_speech() -> None:
     transcript = Transcript.from_payload(
         {
+            "language_code": "uzb",
             "words": [
                 {"type": "word", "text": "first", "start": 0, "end": 0.2},
                 {"type": "word", "text": "keyin", "start": 1.3, "end": 1.5},
                 {"type": "word", "text": "second", "start": 1.6, "end": 1.9},
-            ]
+            ],
         }
     )
 
     sentences = sentences_from_transcript(
         transcript,
         SegmentationOptions(),
-        marker_breaks={"keyin"},
     )
 
     assert [item.text for item in sentences] == ["first", "keyin second"]

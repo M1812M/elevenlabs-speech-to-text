@@ -1,7 +1,6 @@
 import pytest
 
 from elevenlabs_toolkit.languages import get_language_processor
-from elevenlabs_toolkit.languages.uzbek import clean_text
 from elevenlabs_toolkit.models import ScriptMode
 
 
@@ -164,10 +163,6 @@ def test_payload_transforms_audio_event_text_and_preserves_provenance() -> None:
     assert result["words"][0]["source_text"] == event
     assert result["words"][0]["source_characters"] == payload["words"][0]["characters"]
     assert "characters" not in result["words"][0]
-
-
-def test_marker_breaks_are_case_insensitive() -> None:
-    assert clean_text("avval keyin davom", add_marker_breaks=True) == "Avval. Keyin davom"
 
 
 def test_mixed_payload_uses_one_resolved_script() -> None:

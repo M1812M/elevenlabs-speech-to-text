@@ -7,7 +7,6 @@ HAMZA_APOS = "\u2019"
 ELLIPSIS = "\u2026"
 SPACING_PUNCT_RE = re.compile(rf"\s+([,.;:!?{ELLIPSIS}])")
 SENTENCE_START_RE = re.compile(rf"(^|\n|[.!?{ELLIPSIS}]\s+)([a-z\u0430-\u044f\u0451])")
-DEFAULT_SENTENCE_MARKERS = ("Keyin", "Shunda", "Lekin", "Ammo", "Biroq", "Hozir", "Umuman", "Xullas", "Mana", "Demak")
 
 
 def normalize_spaces(text: str) -> str:
@@ -64,41 +63,10 @@ def capitalize_sentence_starts(text: str) -> str:
     return SENTENCE_START_RE.sub(lambda match: match.group(1) + match.group(2).upper(), text)
 
 
-def clean_text(text: str, *, add_marker_breaks: bool = False) -> str:
+def clean_text(text: str) -> str:
     value = capitalize_proper_nouns(fix_common_words(fix_apostrophes(normalize_spaces(text))))
-    if add_marker_breaks:
-        for marker in DEFAULT_SENTENCE_MARKERS:
-            value = re.sub(
-                rf"(?<![.!?{ELLIPSIS}])\s+({re.escape(marker)})\b",
-                r". \1",
-                value,
-                flags=re.IGNORECASE,
-            )
-        value = re.sub(r"\.\s*\.", ".", value)
     return capitalize_sentence_starts(normalize_spaces(value))
 
 
 def clean_token(text: str) -> str:
     return capitalize_proper_nouns(fix_common_words(fix_apostrophes(text)))
-
-
-def _replacement_parts(entry: str) -> tuple[str, str]:
-    if "=" not in entry:
-        raise ValueError(f"invalid replacement {entry!r}; expected FROM=TO")
-    source, target = (part.strip() for part in entry.split("=", 1))
-    if not source or not target or any(character.isspace() for character in source + target):
-        raise ValueError("replacements must use non-empty TOKEN=TOKEN entries")
-    return source, target
-
-
-def apply_replacements(text: str, replacements: tuple[str, ...]) -> str:
-    value = text
-    for entry in replacements:
-        source, target = _replacement_parts(entry)
-        pattern = re.compile(rf"(?<!\w){re.escape(source)}(?!\w)", flags=re.IGNORECASE)
-
-        def replace_match(_match: re.Match[str], replacement: str = target) -> str:
-            return replacement
-
-        value = pattern.sub(replace_match, value)
-    return value

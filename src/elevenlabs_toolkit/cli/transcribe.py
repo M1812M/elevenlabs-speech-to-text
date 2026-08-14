@@ -48,7 +48,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument("--model", default="scribe_v2")
     parser.add_argument("--language-code")
-    parser.add_argument("--timestamps", choices=["none", "word", "character"])
+    parser.add_argument(
+        "--timestamps",
+        choices=["none", "word", "character"],
+        help="Timestamp granularity (default: character).",
+    )
     parser.add_argument("--diarize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--audio-events", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--num-speakers", type=int)
@@ -104,7 +108,7 @@ def _build_options(args: argparse.Namespace) -> tuple[TranscriptionOptions, Expo
         overrides["segmentation.pause_detection"] = args.pause_detection
     config = effective_config(args.profile, overrides=overrides, cwd=Path.cwd())
     segmentation, text = profile_options(config["profile"], config)
-    timestamps = args.timestamps or ("character" if segmentation.pause_detection else "word")
+    timestamps = args.timestamps or "character"
     if timestamps == "none" and any(item in timed_formats for item in formats):
         raise ValueError("timed local formats require --timestamps word or character")
     if segmentation.pause_detection and timestamps != "character":

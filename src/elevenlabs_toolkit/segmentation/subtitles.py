@@ -217,6 +217,6 @@ def segment_transcript(
     text_transform: Callable[[str], str] | None = None,
     text_prefix: Callable[[tuple[Word, ...]], str] | None = None,
 ) -> tuple[Cue, ...]:
-    if options.preset in {"social", "social-uzbek"}:
+    if options.preset == "social":
         return segment_social(transcript, options, text_transform, text_prefix)
     return segment_standard(transcript, options, text_transform, text_prefix)

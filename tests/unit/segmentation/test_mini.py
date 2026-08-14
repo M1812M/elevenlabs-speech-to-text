@@ -4,10 +4,11 @@ from elevenlabs_toolkit.models import Transcript
 from elevenlabs_toolkit.segmentation import MiniSrtError, segment_mini
 
 
-def _transcript(items: list[tuple[str, float, float]]) -> Transcript:
+def _transcript(items: list[tuple[str, float, float]], language_code: str | None = None) -> Transcript:
     return Transcript.from_payload(
         {
             "text": " ".join(text for text, _start, _end in items),
+            "language_code": language_code,
             "words": [{"type": "word", "text": text, "start": start, "end": end} for text, start, end in items],
         }
     )
@@ -64,6 +65,104 @@ def test_readable_comma_clauses_are_split() -> None:
     assert cues[1].start - cues[0].end == pytest.approx(0.1)
 
 
+def test_readable_semicolon_clauses_are_split() -> None:
+    transcript = _transcript(
+        [
+            ("First", 0.0, 0.3),
+            ("complete", 0.3, 0.7),
+            ("clause;", 0.7, 1.1),
+            ("second", 1.1, 1.5),
+            ("complete", 1.5, 1.9),
+            ("clause.", 1.9, 2.4),
+        ]
+    )
+
+    cues = segment_mini(transcript)
+
+    assert [cue.text for cue in cues] == ["First complete clause;", "second complete clause."]
+    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+
+
+def test_split_uses_spoken_character_edges_when_available() -> None:
+    transcript = Transcript.from_payload(
+        {
+            "text": "First complete clause; second complete clause.",
+            "words": [
+                {
+                    "type": "word",
+                    "text": "First",
+                    "start": 0.0,
+                    "end": 0.4,
+                    "characters": [
+                        {"text": "F", "start": 0.08, "end": 0.14},
+                        {"text": "t", "start": 0.30, "end": 0.34},
+                    ],
+                },
+                {"type": "word", "text": "complete", "start": 0.4, "end": 0.8},
+                {
+                    "type": "word",
+                    "text": "clause;",
+                    "start": 0.8,
+                    "end": 1.3,
+                    "characters": [
+                        {"text": "c", "start": 0.84, "end": 0.90},
+                        {"text": "e", "start": 1.08, "end": 1.14},
+                        {"text": ";", "start": 1.14, "end": 1.20},
+                    ],
+                },
+                {
+                    "type": "word",
+                    "text": "second",
+                    "start": 1.3,
+                    "end": 1.8,
+                    "characters": [
+                        {"text": "s", "start": 1.42, "end": 1.48},
+                        {"text": "d", "start": 1.70, "end": 1.76},
+                    ],
+                },
+                {"type": "word", "text": "complete", "start": 1.8, "end": 2.2},
+                {
+                    "type": "word",
+                    "text": "clause.",
+                    "start": 2.2,
+                    "end": 2.8,
+                    "characters": [
+                        {"text": "c", "start": 2.24, "end": 2.30},
+                        {"text": "e", "start": 2.56, "end": 2.62},
+                        {"text": ".", "start": 2.62, "end": 2.68},
+                    ],
+                },
+            ],
+        }
+    )
+
+    cues = segment_mini(transcript)
+
+    assert [(cue.start, cue.end) for cue in cues] == [(0.08, 1.14), (1.42, 2.62)]
+
+
+def test_semicolon_is_preferred_over_a_competing_comma_split() -> None:
+    transcript = _transcript(
+        [
+            ("one", 0.0, 0.3),
+            ("two", 0.3, 0.6),
+            ("three;", 0.6, 0.9),
+            ("verylongword", 0.9, 1.2),
+            ("anotherverylongword,", 1.2, 1.5),
+            ("six", 1.5, 1.8),
+            ("seven", 1.8, 2.1),
+            ("eight.", 2.1, 2.4),
+        ]
+    )
+
+    cues = segment_mini(transcript)
+
+    assert [cue.text for cue in cues] == [
+        "one two three;",
+        "verylongword anotherverylongword, six seven eight.",
+    ]
+
+
 def test_readable_yoki_clause_starts_a_new_cue() -> None:
     transcript = _transcript(
         [
@@ -95,6 +194,67 @@ def test_short_yoki_fragment_stays_with_sentence() -> None:
     )
 
     assert [cue.text for cue in segment_mini(transcript)] == ["Tanlang yoki davom eting."]
+
+
+@pytest.mark.parametrize(
+    ("language_code", "connector"),
+    [
+        ("eng", "and"),
+        ("uzb", "va"),
+        ("kir", "жана"),
+        ("rus", "и"),
+    ],
+)
+def test_four_languages_use_the_same_safe_connector_rule(language_code: str, connector: str) -> None:
+    transcript = _transcript(
+        [
+            ("first", 0.0, 0.4),
+            ("complete", 0.4, 0.9),
+            ("safe", 0.9, 1.3),
+            ("clause", 1.3, 1.8),
+            (connector, 1.8, 2.2),
+            ("second", 2.2, 2.6),
+            ("complete", 2.6, 3.1),
+            ("clause.", 3.1, 3.7),
+        ],
+        language_code,
+    )
+
+    cues = segment_mini(transcript)
+
+    assert [cue.text for cue in cues] == ["first complete safe clause", f"{connector} second complete clause."]
+    assert cues[1].start - cues[0].end == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    ("language_code", "connector"),
+    [
+        ("eng", ("because",)),
+        ("uzb", ("shuning", "uchun")),
+        ("kir", ("андан", "кийин")),
+        ("rus", ("потому", "что")),
+    ],
+)
+def test_four_languages_support_multiword_structure_phrases(
+    language_code: str,
+    connector: tuple[str, ...],
+) -> None:
+    items = [
+        ("first", 0.0, 0.4),
+        ("complete", 0.4, 0.9),
+        ("safe", 0.9, 1.3),
+        ("clause", 1.3, 1.8),
+        *((word, 1.8 + index * 0.3, 2.1 + index * 0.3) for index, word in enumerate(connector)),
+        ("second", 2.5, 2.9),
+        ("complete", 2.9, 3.4),
+        ("clause.", 3.4, 4.0),
+    ]
+    transcript = _transcript(items, language_code)
+
+    cues = segment_mini(transcript)
+
+    assert cues[0].text == "first complete safe clause"
+    assert cues[1].text.startswith(" ".join(connector))
 
 
 def test_short_intro_before_comma_stays_with_sentence() -> None:

@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..files import atomic_write_text
-from ..languages import get_language_processor
+from ..languages import apply_replacements, get_language_processor, language_structure, normalize_language_code
 from ..models import (
     ArtifactFormat,
     ArtifactResult,
@@ -23,9 +23,8 @@ from ..models import (
 )
 from ..renderers import render_cue_index_srt, render_resolve_edl, render_srt, render_txt
 from ..segmentation import segment_mini, segment_standard, sentences_from_transcript
+from ..segmentation.timings import cues_with_precise_gaps
 from .planner import PlanningError
-
-UZBEK_SENTENCE_MARKERS = {"keyin", "shunda", "lekin", "ammo", "biroq", "xullas", "mana", "hozir", "umuman", "demak"}
 
 
 class ExportError(RuntimeError):
@@ -46,24 +45,6 @@ def _validate_pause_timings(transcript: Transcript, options: ExportOptions) -> N
         )
 
 
-def _sentence_marker_options(
-    options: ExportOptions,
-) -> tuple[frozenset[str] | set[str], Callable[[str], str] | None]:
-    if options.text.cleanup != "uzbek":
-        return frozenset(), None
-    processor = get_language_processor("uzbek")
-
-    def normalize(value: str) -> str:
-        return processor.transform_text(
-            value,
-            target=ScriptMode.LATIN,
-            cleanup=True,
-            token_safe=True,
-        )
-
-    return UZBEK_SENTENCE_MARKERS, normalize
-
-
 def _read_payload(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -76,9 +57,32 @@ def _read_payload(path: Path) -> dict:
     return payload
 
 
-def _text_transform(options: ExportOptions) -> Callable[[str], str]:
+def _requires_uzbek_processor(options: ExportOptions) -> bool:
+    return options.text.cleanup == "uzbek" or options.text.script is not ScriptMode.SOURCE
+
+
+def _validate_uzbek_transform(transcript: Transcript, options: ExportOptions) -> None:
+    if not _requires_uzbek_processor(options):
+        return
+    rules = language_structure(transcript.language_code)
+    if rules is not None and rules.name == "uzbek":
+        return
+    normalized_code = normalize_language_code(transcript.language_code)
+    if normalized_code is None:
+        return
+    raise ExportError(
+        "--clean uzbek and --script latin|cyrillic are Uzbek-only; "
+        f"the transcript language_code is {transcript.language_code!r}"
+    )
+
+
+def _text_transform(options: ExportOptions, transcript: Transcript) -> Callable[[str], str]:
     if options.text.cleanup not in {None, "uzbek"}:
         raise ExportError(f"unsupported cleanup processor: {options.text.cleanup}")
+    _validate_uzbek_transform(transcript, options)
+    if not _requires_uzbek_processor(options):
+        return lambda text: apply_replacements(text, options.text.replacements)
+
     processor = get_language_processor("uzbek")
 
     def transform(text: str) -> str:
@@ -118,7 +122,6 @@ def render_artifact(
     payload: dict,
     options: ExportOptions,
 ) -> str:
-    transform = _text_transform(options)
     segmentation = options.segmentation
     timed_formats = {
         ArtifactFormat.SRT,
@@ -132,8 +135,10 @@ def render_artifact(
         _validate_pause_timings(transcript, options)
 
     if artifact_format is ArtifactFormat.SRT:
+        transform = _text_transform(options, transcript)
         text_prefix, main_speaker = _subtitle_measurement(transcript, options)
-        cues = segment_standard(transcript, segmentation, transform, text_prefix)
+        segmented = segment_standard(transcript, segmentation, transform, text_prefix)
+        cues = cues_with_precise_gaps(cue.words for cue in segmented)
         return render_srt(
             cues,
             text_transform=transform,
@@ -144,6 +149,7 @@ def render_artifact(
             main_speaker=main_speaker,
         )
     if artifact_format is ArtifactFormat.SRT_MINI:
+        transform = _text_transform(options, transcript)
         text_prefix, main_speaker = _subtitle_measurement(transcript, options)
         cues = segment_mini(transcript)
         return render_srt(
@@ -166,12 +172,10 @@ def render_artifact(
             marker_prefix=options.marker_prefix,
         )
     if artifact_format is ArtifactFormat.TXT:
-        markers, marker_normalizer = _sentence_marker_options(options)
+        transform = _text_transform(options, transcript)
         sentences = sentences_from_transcript(
             transcript,
             segmentation,
-            marker_breaks=markers,
-            marker_normalizer=marker_normalizer,
             text_transform=transform,
         )
         return render_txt(
@@ -181,6 +185,7 @@ def render_artifact(
     if artifact_format is ArtifactFormat.CLEAN_JSON:
         if options.text.cleanup != "uzbek":
             raise ExportError("clean-json requires an explicit cleanup profile such as --clean uzbek")
+        _validate_uzbek_transform(transcript, options)
         processor = get_language_processor("uzbek")
         cleaned_payload = processor.transform_payload(
             payload,
@@ -253,13 +258,10 @@ def execute_export(
             for source in plan.sources:
                 _payload, transcript = load(source)
                 _validate_pause_timings(transcript, options)
-                transform = _text_transform(options)
-                markers, marker_normalizer = _sentence_marker_options(options)
+                transform = _text_transform(options, transcript)
                 sentences = sentences_from_transcript(
                     transcript,
                     options.segmentation,
-                    marker_breaks=markers,
-                    marker_normalizer=marker_normalizer,
                     text_transform=transform,
                 )
                 sections.append(

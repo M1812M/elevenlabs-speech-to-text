@@ -1,4 +1,5 @@
-from .cleanup import apply_replacements, clean_text, clean_token
+from ..replacements import apply_replacements
+from .cleanup import clean_text, clean_token
 from .processor import UzbekProcessor
 from .transliteration import to_cyrillic, to_latin
 

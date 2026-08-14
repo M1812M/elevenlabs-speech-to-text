@@ -42,7 +42,7 @@ python .\run_toolkit.py --json transcribe --dry-run
 | Transcription output | JSON only |
 | Credentials file | `./.env` |
 | Model | `scribe_v2` |
-| Timestamps | Word |
+| Timestamps | Character |
 | Existing transcription outputs | Replace |
 
 An `ELEVENLABS_API_KEY` already present in the process environment takes
@@ -141,12 +141,26 @@ python .\run_toolkit.py export .\media\interview.json --format srt `
 python .\run_toolkit.py export .\media\interview.json --format srt-mini
 ```
 
-This writes `interview.mini.srt` using deterministic rules without AI:
+This writes `interview.mini.srt` using deterministic rules without AI. The
+JSON `language_code` selects one shared set of structural phrases:
+
+| Language | Codes | Structural split phrases |
+| --- | --- | --- |
+| English | `en`, `eng`, locale variants such as `en-US` | `and`, `or`, `but`, `because`, `therefore`, `however`, `otherwise`, `then`, `while`, `although`, `whereas`, `so`, `yet`, `if`, `now`, `in short`, `in general`, `finally` |
+| Uzbek | `uz`, `uzb` | `va`, `yoki`, `hamda`, `lekin`, `ammo`, `biroq`, `chunki`, `shuning uchun`, `aks holda`, `keyin`, `shunda`, `demak`, `garchi`, `esa`, `agar`, `hozir`, `xullas`, `umuman`, `nihoyat`, `mana`; the corresponding Uzbek Cyrillic spellings are supported too |
+| Kyrgyz | `ky`, `kir` | `жана`, `же`, `же болбосо`, `бирок`, `анткени`, `ошондуктан`, `болбосо`, `андан кийин`, `анда`, `демек`, `ошентсе да`, `ал эми`, `эгерде`, `азыр`, `кыскасы`, `жалпысынан`, `акыры` |
+| Russian | `ru`, `rus`, locale variants such as `ru-RU` | `и`, `или`, `либо`, `но`, `а`, `потому что`, `поэтому`, `однако`, `иначе`, `затем`, `тогда`, `хотя`, `так что`, `при этом`, `если`, `теперь`, `короче`, `в общем`, `вообще`, `наконец` |
+
+If an older transcript has no `language_code`, the four sets are combined. A
+present but unsupported language code gets no language-specific split rules.
+The phrase remains at the beginning of the new cue.
 
 1. Put each complete sentence in its own cue.
-2. Split a sentence at commas or before Uzbek `yoki` only when every resulting
-   clause contains at least three spoken words and at least 0.8 seconds of
-   natural JSON timing.
+2. Split a sentence at semicolons, commas, or before a matching structural
+   phrase only when every resulting clause contains at least three spoken words
+   and at least 0.8 seconds of natural JSON timing. Semicolons take precedence
+   over competing comma splits; sentence-ending punctuation remains a hard
+   boundary.
 3. Keep short introductions and enumeration fragments together, so isolated
    words do not become subtitle cues.
 4. Keep at least 100 milliseconds between adjacent cues. If the JSON timing is
@@ -157,6 +171,10 @@ The same `srt-mini` format can be used with `transcribe`, in which case the
 canonical JSON is still written too. Script conversion belongs to `export`;
 add `--script latin` or `--script cyrillic` when desired. Cue text remains on
 one line unless `--srt-smart-line-breaks` is supplied.
+
+Uzbek Latin/Cyrillic conversion and `--clean uzbek` remain explicitly
+Uzbek-only. English, Kyrgyz, and Russian use the same subtitle structure rules,
+but are not passed through Uzbek editorial cleanup or transliteration.
 
 ## Paid-call and conflict behavior
 
@@ -193,9 +211,11 @@ default to zero because another attempt can incur another charge.
 --replace TOKEN=TOKEN
 ```
 
-Timed outputs require word or character timestamps. Pause detection requires
-character timestamps; a profile that enables pause detection selects character
-timestamps automatically.
+Timed outputs require word or character timestamps. Character timestamps are
+the default and give generated SRT cue boundaries the precise first and last
+spoken-character times. Word times remain the fallback for older JSON files.
+Adjacent SRT cues retain a minimum gap of 100 milliseconds. Pause detection
+also requires character timestamps.
 
 ## Other commands
 
@@ -232,7 +252,7 @@ Start from `elevenlabs-toolkit.toml.example`, then inspect the merged result:
 
 ```powershell
 python .\run_toolkit.py config show
-python .\run_toolkit.py config show --profile short-form-uzbek
+python .\run_toolkit.py config show --profile short-form
 ```
 
 Credentials never belong in TOML. Keep `.env` uncommitted.

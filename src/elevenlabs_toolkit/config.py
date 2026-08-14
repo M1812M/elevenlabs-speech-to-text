@@ -93,12 +93,6 @@ _BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
             "pause_detection": True,
         }
     },
-    "social-uzbek": {
-        "segmentation": {**_SOCIAL_SEGMENTATION, "preset": "social-uzbek"},
-        # Selecting a language-specific profile is the explicit opt-in to
-        # editorial cleanup. Script conversion remains a separate choice.
-        "text": {"script": "source", "cleanup": "uzbek"},
-    },
 }
 
 

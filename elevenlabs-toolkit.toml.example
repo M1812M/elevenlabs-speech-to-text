@@ -19,13 +19,13 @@ split_on_speaker_change = true
 script = "source"
 speaker_labels = "none"
 replacements = []
-# Sources may use either Uzbek script; literal targets bypass transliteration.
+# Literal replacements work without language-specific conversion.
 # replacements = ["Acme=ACME"]
 # cleanup = "uzbek"  # Editorial cleanup is opt-in.
 
 # Custom profiles contain only the values they need to override. Select this
-# profile with `--profile short-form-uzbek` or set `profile` above to its name.
-[profiles.short-form-uzbek.segmentation]
+# profile with `--profile short-form` or set `profile` above to its name.
+[profiles.short-form.segmentation]
 max_chars_per_line = 30
 max_lines = 2
 max_duration = 2.6
@@ -35,8 +35,7 @@ hard_gap_seconds = 1.5
 pause_detection = true
 max_words = 9
 
-[profiles.short-form-uzbek.text]
+[profiles.short-form.text]
 script = "source"
-cleanup = "uzbek"
 speaker_labels = "secondary"
 replacements = []

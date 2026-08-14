@@ -177,7 +177,7 @@ class TextOptions:
 class TranscriptionOptions:
     model_id: str = "scribe_v2"
     language_code: str | None = None
-    timestamps_granularity: str = "word"
+    timestamps_granularity: str = "character"
     diarize: bool = True
     tag_audio_events: bool = True
     num_speakers: int | None = None
