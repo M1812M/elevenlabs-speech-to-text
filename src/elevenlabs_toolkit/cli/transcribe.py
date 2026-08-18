@@ -167,17 +167,18 @@ def run(args: argparse.Namespace, context: CliContext) -> int:
         return 0 if plan.valid else 1
 
     provider = ElevenLabsProvider(env_file=args.env_file) if plan.api_requests else None
-    result = execute_transcription(
-        plan,
-        transcription,
-        export,
-        provider=provider,
-        policy=policy,
-        retries=args.retries,
-        backoff_seconds=args.retry_backoff,
-        request_delay=args.request_delay,
-        fail_fast=args.fail_fast,
-        progress=context.log,
-    )
+    with context.live_progress() as progress:
+        result = execute_transcription(
+            plan,
+            transcription,
+            export,
+            provider=provider,
+            policy=policy,
+            retries=args.retries,
+            backoff_seconds=args.retry_backoff,
+            request_delay=args.request_delay,
+            fail_fast=args.fail_fast,
+            progress=progress,
+        )
     context.emit_result(result)
     return result.exit_code

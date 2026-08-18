@@ -76,6 +76,27 @@ def _source_snapshot(path: Path) -> tuple[int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
+def _file_size_text(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    raise RuntimeError("unreachable")
+
+
+def _elapsed_text(seconds: float) -> str:
+    total = max(0, round(seconds))
+    minutes, seconds = divmod(total, 60)
+    return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+
+
+def _provider_label(value: str | None) -> str:
+    if value and value.casefold() == "elevenlabs":
+        return "ElevenLabs"
+    return value or "speech-to-text provider"
+
+
 def _prepare_payload(
     payload: dict,
     source: Path,
@@ -130,9 +151,14 @@ def _request_with_retry(
     retries: int,
     backoff_seconds: float,
     progress: Callable[[str], None] | None,
+    status_label: str,
+    provider_label: str,
 ) -> dict:
     for attempt in range(retries + 1):
         try:
+            if progress:
+                attempt_text = f" (attempt {attempt + 1}/{retries + 1})" if retries else ""
+                progress(f"{status_label} - uploading + transcribing with {provider_label}{attempt_text}")
             return provider.transcribe(source, options)
         except ProviderTransientError as exc:
             if attempt >= retries:
@@ -143,7 +169,10 @@ def _request_with_retry(
                 else max(0.0, backoff_seconds) * (2**attempt)
             )
             if progress:
-                progress(f"Transient error for {source.name}; retry {attempt + 2}/{retries + 1} in {delay:.1f}s: {exc}")
+                progress(
+                    f"{status_label} - temporary provider error; "
+                    f"retry {attempt + 2}/{retries + 1} in {delay:.1f}s: {exc}"
+                )
             if delay:
                 time.sleep(delay)
     raise RuntimeError("unreachable")
@@ -177,7 +206,9 @@ def execute_transcription(
     results: list[ArtifactResult] = []
     sources_attempted = 0
 
-    for source in plan.sources:
+    source_count = len(plan.sources)
+    provider_label = _provider_label(plan.provider)
+    for source_number, source in enumerate(plan.sources, start=1):
         outputs = _artifact_map(plan, source)
         completed_formats: set[ArtifactFormat] = set()
 
@@ -194,11 +225,13 @@ def execute_transcription(
                 for parent in {output.target.parent for output in outputs.values()}:
                     ensure_atomic_no_clobber_supported(parent)
             if sources_attempted and request_delay:
+                if progress:
+                    progress(f"Waiting {request_delay:.1f}s before the next provider request")
                 time.sleep(request_delay)
             sources_attempted += 1
             source_before = _source_snapshot(source)
-            if progress:
-                progress(f"TRANSCRIBE {source.name}")
+            status_label = f"[{source_number}/{source_count}] {source.name} ({_file_size_text(source_before[2])})"
+            request_started = time.monotonic()
             payload = _request_with_retry(
                 provider,
                 source,
@@ -206,7 +239,14 @@ def execute_transcription(
                 retries=retries,
                 backoff_seconds=backoff_seconds,
                 progress=progress,
+                status_label=status_label,
+                provider_label=provider_label,
             )
+            if progress:
+                progress(
+                    f"{status_label} - response received after "
+                    f"{_elapsed_text(time.monotonic() - request_started)}; preparing outputs"
+                )
             if _source_snapshot(source) != source_before:
                 raise TranscriptionJobError(
                     f"source changed while it was being transcribed; response was discarded: {source}"
@@ -225,6 +265,12 @@ def execute_transcription(
                 export_options,
                 effective_policy,
             )
+            if progress:
+                progress(
+                    f"{status_label} - transcript ready "
+                    f"({len(transcript.text):,} characters, {len(transcript.timed_words):,} timed items); "
+                    f"writing {len(prepared)} output(s)"
+                )
 
             for output_format, content in prepared.items():
                 output = outputs[output_format]
@@ -237,6 +283,8 @@ def execute_transcription(
                     target, status = atomic_write_text(output.target, content, effective_policy)
                     results.append(ArtifactResult(replace(output, target=target), status))
                 completed_formats.add(output_format)
+            if progress:
+                progress(f"{status_label} - complete")
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             for output_format, output in outputs.items():

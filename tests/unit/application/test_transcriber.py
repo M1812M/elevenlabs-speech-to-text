@@ -84,6 +84,25 @@ def test_transcription_writes_provider_json_without_sidecar_files(tmp_path: Path
     assert json.loads((output / "clip.json").read_text(encoding="utf-8")) == PAYLOAD
 
 
+def test_transcription_progress_reports_file_phase_and_completion(tmp_path: Path) -> None:
+    _source, _output, stt, export, plan = _job(tmp_path)
+    messages: list[str] = []
+
+    result = execute_transcription(
+        plan,
+        stt,
+        export,
+        provider=FakeProvider(PAYLOAD),
+        progress=messages.append,
+    )
+
+    assert result.failed == 0
+    assert messages[0] == "[1/1] clip.mp3 (5 B) - uploading + transcribing with ElevenLabs"
+    assert messages[1].startswith("[1/1] clip.mp3 (5 B) - response received after ")
+    assert "transcript ready (11 characters, 2 timed items); writing 1 output(s)" in messages[2]
+    assert messages[3] == "[1/1] clip.mp3 (5 B) - complete"
+
+
 def test_replace_policy_always_requests_a_fresh_transcription(tmp_path: Path) -> None:
     _source, output, stt, export, first_plan = _job(tmp_path, policy=ConflictPolicy.REPLACE)
     first_provider = FakeProvider(PAYLOAD)

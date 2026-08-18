@@ -175,6 +175,19 @@ canonical JSON is still written too. Script conversion belongs to `export`;
 add `--script latin` or `--script cyrillic` when desired. Cue text remains on
 one line unless `--srt-smart-line-breaks` is supplied.
 
+### Live transcription status
+
+During a normal interactive `transcribe` run, one animated status line shows
+the current file number, filename, size, phase, and elapsed time. The provider
+request is labelled `uploading + transcribing` because the synchronous
+ElevenLabs request does not expose separate upload or server-side percentage
+progress. Once the response arrives, the status changes to output preparation
+and writing.
+
+When output is redirected, the same phase changes are emitted as ordinary
+lines without terminal control characters. `--quiet` suppresses them, and
+`--json` remains a single clean machine-readable result.
+
 Uzbek Latin/Cyrillic conversion and `--clean uzbek` remain explicitly
 Uzbek-only. English, Kyrgyz, and Russian use the same subtitle structure rules,
 but are not passed through Uzbek editorial cleanup or transliteration.
