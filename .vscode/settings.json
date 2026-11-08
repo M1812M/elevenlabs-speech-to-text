@@ -1,9 +1,20 @@
 {
-   "python-envs.pythonProjects": [
-      {
-         "path": ".",
-         "envManager": "ms-python.python:venv",
-         "packageManager": "ms-python.python:pip"
-      }
-   ]
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv",
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.interpreter.infoVisibility": "always",
+  "python-envs.alwaysUseUv": true,
+  "python.testing.cwd": "${workspaceFolder}",
+  "terminal.integrated.cwd": "${workspaceFolder}",
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/src"
+  ],
+  "ruff.importStrategy": "fromEnvironment",
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  }
 }

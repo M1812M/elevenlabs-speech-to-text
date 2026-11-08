@@ -2,15 +2,61 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: ElevenLabs Toolkit Script",
+      "name": "ElevenLabs: Hilfe",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/run_toolkit.py",
-      "args": ["--help"],
+      "python": "${command:python.interpreterPath}",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true,
+      "program": "${workspaceFolder}/run_toolkit.py",
+      "args": [
+        "--help"
+      ],
       "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": "ElevenLabs: Transkription – Vorschau",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${command:python.interpreterPath}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "program": "${workspaceFolder}/run_toolkit.py",
+      "args": [
+        "--json",
+        "transcribe",
+        "--dry-run"
+      ],
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": "ElevenLabs: Transkribieren (API)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${command:python.interpreterPath}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "program": "${workspaceFolder}/run_toolkit.py",
+      "args": [
+        "transcribe"
+      ],
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": "ElevenLabs: Tests",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${command:python.interpreterPath}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "module": "pytest",
+      "args": [
+        "-q"
+      ]
     }
   ]
 }
