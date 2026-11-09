@@ -294,7 +294,8 @@ Credentials never belong in TOML. Keep `.env` uncommitted.
 
 ## Development
 
-The project supports Python 3.10 through 3.14. With the pinned uv version:
+The project supports Python 3.10 through 3.15. The local environment uses the
+version pinned in `.python-version`. With the pinned uv version:
 
 ```powershell
 uv sync --locked --extra stt --extra dev
@@ -303,6 +304,25 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 ```
+
+For desktop development, include the GUI extra and launch the window:
+
+```sh
+uv sync --locked --extra gui --extra stt --extra dev
+uv run --locked --extra gui --extra stt --extra dev python run_gui.py
+```
+
+Choose Transcribe, Convert Script, Export, Clean, Inspect, or Configuration
+in the sidebar. Add files or folders with the buttons or drag and drop.
+Folder filters apply within selected folders. Preview lists planned destinations
+and API requests. For Transcribe and Export, **Review before running** adds a
+confirmation step before the planned job starts.
+
+Leave the output folder blank to save beside each source. Transcription writes
+`filename.ext.transcript.json` by default. Select additional formats in the
+transcription panel, or open an existing transcript in Export to render it
+offline. Select **JSON** in the result selector to copy a machine-readable
+preview or result from the details area.
 
 The local launcher also works without installing the package:
 

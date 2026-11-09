@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from fnmatch import fnmatchcase
 from pathlib import Path
 from re import Pattern
@@ -12,6 +12,10 @@ from elevenlabs_toolkit.models.jobs import InputSpec
 
 class DiscoveryError(ValueError):
     """Raised when an input specification cannot produce usable files."""
+
+
+class DiscoveryCancelled(RuntimeError):
+    """Raised when a caller cancels input discovery."""
 
 
 AUDIO_VIDEO_SUFFIXES = frozenset(
@@ -51,6 +55,9 @@ def discover_inputs(
     allowed_suffixes: set[str],
     default_glob: str | None = None,
     exclude_generated: bool = True,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+    exclude_folder_suffixes: tuple[str, ...] = (),
 ) -> tuple[Path, ...]:
     """Resolve an explicit input specification to a stable collection of files.
 
@@ -70,6 +77,8 @@ def discover_inputs(
 
     discovered: dict[Path, Path] = {}
     for raw_path in spec.paths:
+        if should_stop is not None and should_stop():
+            raise DiscoveryCancelled("Input scanning cancelled")
         path = Path(raw_path).expanduser()
         if not path.exists():
             raise DiscoveryError(
@@ -94,6 +103,8 @@ def discover_inputs(
             recursive=spec.recursive,
             exclude_generated=exclude_generated,
             case_insensitive_glob=case_insensitive_glob,
+            should_stop=should_stop,
+            exclude_folder_suffixes=exclude_folder_suffixes,
         )
         if not matches:
             selector = _selector_description(glob_pattern, spec.regex)
@@ -178,6 +189,8 @@ def _discover_in_directory(
     recursive: bool,
     exclude_generated: bool,
     case_insensitive_glob: bool,
+    should_stop: Callable[[], bool] | None,
+    exclude_folder_suffixes: tuple[str, ...],
 ) -> tuple[Path, ...]:
     try:
         if glob_pattern is not None:
@@ -190,9 +203,13 @@ def _discover_in_directory(
 
         matches: dict[Path, Path] = {}
         for candidate in candidates:
+            if should_stop is not None and should_stop():
+                raise DiscoveryCancelled("Input scanning cancelled")
             if not candidate.is_file():
                 continue
             if candidate.suffix.casefold() not in suffixes:
+                continue
+            if candidate.name.casefold().endswith(exclude_folder_suffixes):
                 continue
             if _is_metadata_artifact(candidate):
                 continue

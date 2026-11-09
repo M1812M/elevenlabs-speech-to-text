@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from ..models import (
@@ -51,8 +51,10 @@ def _validate_transcription_names(
                 raise PlanningError(f"generated transcription output name is unsafe: {leaf!r}")
 
 
-def artifact_name(source: Path, artifact_format: ArtifactFormat, script: ScriptMode = ScriptMode.SOURCE) -> str:
-    stem = source.stem
+def artifact_name(
+    source: Path, artifact_format: ArtifactFormat, script: ScriptMode = ScriptMode.SOURCE, *, stem: str | None = None
+) -> str:
+    stem = source.stem if stem is None else stem
     names = {
         ArtifactFormat.JSON: f"{stem}.json",
         ArtifactFormat.SRT: f"{stem}.srt",
@@ -203,6 +205,7 @@ def plan_transcription(
     dry_run: bool = False,
     transcription_options: TranscriptionOptions,
     provider: str = "elevenlabs",
+    output_stems: Mapping[Path, str] | None = None,
 ) -> JobPlan:
     source_tuple = tuple(Path(source) for source in sources)
     if not source_tuple:
@@ -242,7 +245,10 @@ def plan_transcription(
 
     for source in source_tuple:
         relative_parent = _relative_parent(source, common_parent)
-        targets = [output_dir / relative_parent / artifact_name(source, item) for item in format_tuple]
+        stem = output_stems.get(source, source.stem) if output_stems is not None else source.stem
+        if not _safe_leaf_name(stem):
+            raise PlanningError(f"unsafe transcription output stem: {stem!r}")
+        targets = [output_dir / relative_parent / artifact_name(source, item, stem=stem) for item in format_tuple]
         if policy is not ConflictPolicy.SKIP or not all(_path_occupied(target) for target in targets):
             api_requests += 1
         for artifact_format, target in zip(format_tuple, targets, strict=True):
@@ -288,6 +294,7 @@ def plan_transliteration(
             if stem.casefold().endswith(suffix):
                 stem = stem[: -len(suffix)]
                 break
-        target = output_dir / relative_parent / f"{stem}.{to_script.value}.srt"
-        requested.append(PlannedArtifact(source, target, ArtifactFormat.SRT))
+        artifact_format = ArtifactFormat.TXT if source.suffix.casefold() == ".txt" else ArtifactFormat.SRT
+        target = output_dir / relative_parent / f"{stem}.{to_script.value}.{artifact_format.value}"
+        requested.append(PlannedArtifact(source, target, artifact_format))
     return _finalize_plan(source_tuple, requested, policy=policy, dry_run=dry_run)

@@ -26,7 +26,7 @@ from ..models import (
 )
 from ..providers import ProviderTransientError, SpeechToTextProvider, decode_additional_formats
 from .exporter import render_artifact
-from .planner import PlanningError, _safe_leaf_name
+from .planner import PlanningError, _safe_leaf_name, artifact_name
 
 REMOTE_FORMATS = {
     ArtifactFormat.PDF,
@@ -130,7 +130,7 @@ def _prepare_outputs(
         if output_format is ArtifactFormat.JSON:
             prepared[output_format] = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         elif output_format in REMOTE_FORMATS:
-            content = decoded.get(output.target.name.casefold())
+            content = decoded.get(artifact_name(output.source, output_format).casefold())
             if content is None:
                 raise TranscriptionJobError(
                     f"ElevenLabs response did not contain requested remote format {output_format.value}"

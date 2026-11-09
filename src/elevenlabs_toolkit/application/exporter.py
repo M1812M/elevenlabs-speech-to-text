@@ -193,6 +193,8 @@ def execute_export(
     *,
     policy: ConflictPolicy = ConflictPolicy.ERROR,
     fail_fast: bool = False,
+    should_stop: Callable[[], bool] | None = None,
+    source_finished: Callable[[Path], None] | None = None,
 ) -> JobResult:
     if not plan.valid:
         details = "; ".join(f"{item.target}: {item.reason}" for item in plan.conflicts)
@@ -244,6 +246,9 @@ def execute_export(
         try:
             sections: list[str] = []
             for source in plan.sources:
+                if should_stop is not None and should_stop():
+                    results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "cancelled before publication"))
+                    return JobResult(tuple(results))
                 _payload, transcript = load(source)
                 _validate_pause_timings(transcript, options)
                 transform = _text_transform(options, transcript)
@@ -258,6 +263,11 @@ def execute_export(
                         include_source=source.name,
                     ).rstrip()
                 )
+                if source_finished is not None:
+                    source_finished(source)
+            if should_stop is not None and should_stop():
+                results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "cancelled before publication"))
+                return JobResult(tuple(results))
             content = "\n\n".join(section for section in sections if section) + "\n"
             written_path, status = atomic_write_text(artifact.target, content, effective_policy)
             results.append(ArtifactResult(replace(artifact, target=written_path), status))

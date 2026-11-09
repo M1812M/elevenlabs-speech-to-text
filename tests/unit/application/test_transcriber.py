@@ -199,7 +199,8 @@ def test_provider_retry_after_overrides_local_backoff(tmp_path: Path, monkeypatc
     assert delays == [2.5]
 
 
-def test_remote_additional_format_is_decoded_and_written(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stem", ["clip", "clip.wav.transcript"])
+def test_remote_additional_format_is_decoded_and_written(tmp_path: Path, stem: str) -> None:
     stt = TranscriptionOptions(remote_formats=("pdf",))
     source, output, _stt, _export, _plan = _job(tmp_path, (ArtifactFormat.TXT,), stt=stt)
     payload = {
@@ -215,13 +216,15 @@ def test_remote_additional_format_is_decoded_and_written(tmp_path: Path) -> None
     }
     formats = (ArtifactFormat.TXT, ArtifactFormat.PDF)
     export = ExportOptions(formats, output)
-    plan = plan_transcription((source,), output, (ArtifactFormat.TXT,), transcription_options=stt)
+    plan = plan_transcription(
+        (source,), output, (ArtifactFormat.TXT,), transcription_options=stt, output_stems={source: stem}
+    )
 
     result = execute_transcription(plan, stt, export, provider=FakeProvider(payload))
 
     assert result.failed == 0
-    assert {path.name for path in output.iterdir()} == {"clip.txt", "clip.pdf"}
-    assert (output / "clip.pdf").read_bytes() == b"pdf bytes"
+    assert {path.name for path in output.iterdir()} == {f"{stem}.txt", f"{stem}.pdf"}
+    assert (output / f"{stem}.pdf").read_bytes() == b"pdf bytes"
 
 
 def test_untimed_provider_words_can_render_plain_text(tmp_path: Path) -> None:
