@@ -2,8 +2,28 @@ from pathlib import Path
 
 import pytest
 
-from elevenlabs_toolkit.application import PlanningError, plan_exports, plan_transcription
-from elevenlabs_toolkit.models import ArtifactFormat, ConflictPolicy, ExportOptions, TranscriptionOptions
+from elevenlabs_toolkit.application import PlanningError, plan_exports, plan_transcription, plan_transliteration
+from elevenlabs_toolkit.models import ArtifactFormat, ConflictPolicy, ExportOptions, ScriptMode, TranscriptionOptions
+
+
+@pytest.mark.parametrize(
+    ("source_name", "mode", "expected"),
+    [
+        ("04 T LTN.srt", ScriptMode.CYRILLIC, "04 T CYR.srt"),
+        ("04 T cyr.srt", ScriptMode.LATIN, "04 T LTN.srt"),
+        ("04 T.srt", ScriptMode.CYRILLIC, "04 T CYR.srt"),
+        ("concertltn.srt", ScriptMode.CYRILLIC, "concertltn CYR.srt"),
+        ("text.latin.txt", ScriptMode.CYRILLIC, "text CYR.txt"),
+        ("text_cyrillic.srt", ScriptMode.LATIN, "text LTN.srt"),
+    ],
+)
+def test_transliteration_uses_short_script_suffix(
+    tmp_path: Path, source_name: str, mode: ScriptMode, expected: str
+) -> None:
+    source = tmp_path / source_name
+    source.write_text("Salom", encoding="utf-8")
+    plan = plan_transliteration((source,), tmp_path / "out", mode)
+    assert plan.artifacts[0].target.name == expected
 
 
 def test_existing_output_is_a_preflight_conflict(tmp_path: Path) -> None:

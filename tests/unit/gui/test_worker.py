@@ -20,7 +20,7 @@ def test_conversion_continues_after_bad_input_and_preserves_source(tmp_path: Pat
     worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
     worker.run()
     assert good.read_text() == "Salom"
-    assert (tmp_path / "good.cyrillic.txt").read_text() == "Салом"
+    assert (tmp_path / "good CYR.txt").read_text() == "Салом"
     assert "FAILED" in messages[0]
 
 
@@ -54,8 +54,8 @@ def test_stop_between_files(tmp_path: Path) -> None:
     )
     worker.start()
     assert worker.wait(5000)
-    assert sources[0].with_suffix(".cyrillic.txt").exists()
-    assert not sources[1].with_suffix(".cyrillic.txt").exists()
+    assert (tmp_path / "0 CYR.txt").exists()
+    assert not (tmp_path / "1 CYR.txt").exists()
 
 
 def test_export_multiple_formats_is_offline(tmp_path: Path, monkeypatch) -> None:

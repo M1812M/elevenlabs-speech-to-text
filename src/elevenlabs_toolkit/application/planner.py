@@ -290,11 +290,12 @@ def plan_transliteration(
     for source in source_tuple:
         relative_parent = _relative_parent(source, common_parent)
         stem = source.stem
-        for suffix in ("_latin", "_cyrillic", ".latin", ".cyrillic"):
+        for suffix in (" ltn", " cyr", "_latin", "_cyrillic", ".latin", ".cyrillic"):
             if stem.casefold().endswith(suffix):
                 stem = stem[: -len(suffix)]
                 break
         artifact_format = ArtifactFormat.TXT if source.suffix.casefold() == ".txt" else ArtifactFormat.SRT
-        target = output_dir / relative_parent / f"{stem}.{to_script.value}.{artifact_format.value}"
+        abbreviation = {ScriptMode.LATIN: "LTN", ScriptMode.CYRILLIC: "CYR"}.get(to_script, to_script.value)
+        target = output_dir / relative_parent / f"{stem} {abbreviation}.{artifact_format.value}"
         requested.append(PlannedArtifact(source, target, artifact_format))
     return _finalize_plan(source_tuple, requested, policy=policy, dry_run=dry_run)

@@ -267,7 +267,7 @@ def test_transliterate_preserves_srt_structure_and_html_tags(tmp_path: Path) -> 
     result = _run("transliterate", str(source), "--to", "cyrillic", "-o", str(output))
 
     assert result.returncode == 0, result.stderr
-    converted = (output / "sample.cyrillic.srt").read_text(encoding="utf-8")
+    converted = (output / "sample CYR.srt").read_text(encoding="utf-8")
     assert "00:00:00,000 --> 00:00:01,000" in converted
     assert "<i>Салом</i>" in converted
     assert "</i>" in converted
@@ -282,7 +282,7 @@ def test_transliterate_preserves_entities_and_timing_settings(tmp_path: Path) ->
     result = _run("transliterate", str(source), "--to", "cyrillic", "-o", str(output))
 
     assert result.returncode == 0, result.stderr
-    converted = (output / "sample.cyrillic.srt").read_text(encoding="utf-8")
+    converted = (output / "sample CYR.srt").read_text(encoding="utf-8")
     assert timing in converted
     assert "&amp;" in converted
 

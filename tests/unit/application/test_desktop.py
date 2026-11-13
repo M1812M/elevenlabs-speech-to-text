@@ -29,7 +29,7 @@ def test_transcription_same_stem_keeps_distinct_json_outputs(tmp_path: Path) -> 
 def test_preflight_rejects_output_overwriting_another_selected_source(tmp_path: Path) -> None:
     source = tmp_path / "text.txt"
     source.write_text("Salom")
-    generated = tmp_path / "text.cyrillic.txt"
+    generated = tmp_path / "text CYR.txt"
     generated.write_text("Keep me")
     with pytest.raises(PlanningError, match="overwrite"):
         prepare_files(
@@ -100,7 +100,7 @@ def test_txt_conversion_has_txt_plan_and_strips_previous_script_suffix(tmp_path:
         DesktopSettings(project_directory=tmp_path),
     )
     assert item.plan.artifacts[0].format is ArtifactFormat.TXT
-    assert item.plan.artifacts[0].target == tmp_path / "text.cyrillic.txt"
+    assert item.plan.artifacts[0].target == tmp_path / "text CYR.txt"
 
 
 def test_combined_export_groups_sources_by_directory(tmp_path: Path) -> None:

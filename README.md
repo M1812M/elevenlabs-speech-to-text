@@ -277,6 +277,10 @@ python .\run_toolkit.py clean .\media\legacy.json
 python .\run_toolkit.py transliterate .\media\subtitles.srt --to cyrillic
 ```
 
+Converted files use ` LTN` or ` CYR` before the extension. A trailing script
+suffix is replaced, so `04 T LTN.srt` becomes `04 T CYR.srt`. This naming
+also applies to TXT files converted in the desktop app.
+
 These legacy/offline JSON tools do not change the direct behavior of
 `transcribe`.
 
