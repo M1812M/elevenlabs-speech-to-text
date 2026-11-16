@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from .application.desktop import DesktopSettings, PreparedFile, prepare_files
-from .files.discovery import AUDIO_VIDEO_SUFFIXES, DiscoveryCancelled, discover_inputs
+from .files.discovery import AUDIO_VIDEO_SUFFIXES, DiscoveryCancelled, DiscoveryError, discover_inputs, validate_filter
 from .gui_options import FORMAT_DESCRIPTIONS, TextOptionsPanel, TranscriptionPanel
 from .models import ArtifactFormat, ConflictPolicy, InputSpec, ScriptMode
 
@@ -161,7 +161,15 @@ class Worker(QThread):
             prepared = (
                 self.retry_plan
                 if self.retry_plan is not None
-                else prepare_files(self.action, paths, self.mode, self.policy, self.formats, self.settings)
+                else prepare_files(
+                    self.action,
+                    paths,
+                    self.mode,
+                    self.policy,
+                    self.formats,
+                    self.settings,
+                    allow_preview_conflicts=self.preview_only,
+                )
             )
             self.plan_ready.emit(
                 [
@@ -169,6 +177,7 @@ class Worker(QThread):
                         "source": str(source),
                         "outputs": [str(artifact.target) for artifact in item.plan.artifacts],
                         "operation": index,
+                        "error": "; ".join(conflict.reason for conflict in item.plan.conflicts),
                     }
                     for index, item in enumerate(prepared)
                     for source in item.plan.sources
@@ -295,19 +304,35 @@ class Worker(QThread):
                 limit = 12000
                 suffix = "\n\n[Preview truncated]" if len(content) > limit else ""
                 action = ""
-                if artifact.target.exists() or artifact.target.is_symlink():
+                if any(entry.plan.conflicts for entry in prepared):
+                    action = "\nThe batch has an output conflict and cannot run until it is resolved."
+                elif artifact.target.exists() or artifact.target.is_symlink():
                     if self.policy is ConflictPolicy.SKIP:
                         action = "\nThe existing output will be skipped if unchanged; the text below is a preview only."
                     elif self.policy is ConflictPolicy.REPLACE:
                         action = "\nThe existing output will be replaced if unchanged when the batch runs."
+                    elif self.policy is ConflictPolicy.ERROR:
+                        action = "\nThe existing output is a conflict; the batch cannot run until it is resolved."
                 return f"Content preview: {artifact.source} → {artifact.target}{action}\n\n{content[:limit]}{suffix}"
         return "No SRT, SRT-mini, or TXT content is available to preview for this selection."
 
     def preview_text(self, prepared: tuple[PreparedFile, ...]) -> str:
         lines = []
         artifacts = []
-        requests = sum(item.plan.api_requests for item in prepared)
+        unique_conflicts = dict.fromkeys(conflict for item in prepared for conflict in item.plan.conflicts)
+        conflicts = [
+            {
+                "target": str(conflict.target),
+                "sources": [str(source) for source in conflict.sources],
+                "reason": conflict.reason,
+            }
+            for conflict in unique_conflicts
+        ]
+        conflict_targets = {conflict.target: conflict.reason for conflict in unique_conflicts}
+        requests = 0 if conflicts else sum(item.plan.api_requests for item in prepared)
         attempts = requests * (1 + self.settings.retries)
+        if conflicts:
+            lines.append("The batch cannot run until its output conflicts are resolved.")
         if self.action == "Transcribe":
             lines.append(f"Planned API requests: {requests}, up to {attempts} attempts. API charges may apply.")
         for item in prepared:
@@ -317,8 +342,16 @@ class Worker(QThread):
                 if artifact.format is ArtifactFormat.COMBINED_TXT:
                     lines.append("Combined text inputs: " + ", ".join(str(source) for source in item.plan.sources))
                 status = "Create"
-                if artifact.target.exists() or artifact.target.is_symlink():
-                    status = "Replace" if self.policy is ConflictPolicy.REPLACE else "Skip existing"
+                if artifact.target in conflict_targets:
+                    status = f"Conflict: {conflict_targets[artifact.target]}"
+                elif artifact.target.exists() or artifact.target.is_symlink():
+                    status = (
+                        "Replace"
+                        if self.policy is ConflictPolicy.REPLACE
+                        else "Skip existing"
+                        if self.policy is ConflictPolicy.SKIP
+                        else "Conflict: output already exists"
+                    )
                 lines.append(f"{artifact.source} → {artifact.target} ({status})")
                 artifacts.append(
                     {
@@ -333,10 +366,13 @@ class Worker(QThread):
         if self.report_mode == "JSON":
             return json.dumps(
                 {
+                    "status": "conflict" if conflicts else "planned",
+                    "dry_run": True,
                     "sources": list(dict.fromkeys(str(path) for item in prepared for path in item.plan.sources)),
                     "api_requests": requests,
                     "max_api_attempts": attempts,
                     "artifacts": artifacts,
+                    "conflicts": conflicts,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -534,8 +570,19 @@ class MainWindow(QMainWindow):
         self.pattern = QLineEdit()
         self.pattern.setPlaceholderText("Match paths inside folders")
         self.pattern.setEnabled(False)
+        self.pattern_error = QLabel()
+        self.pattern_error.setStyleSheet("color: #b00020")
+        self.pattern_error.setWordWrap(True)
+        pattern_container = QWidget()
+        pattern_layout = QVBoxLayout(pattern_container)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.setSpacing(0)
+        pattern_layout.addWidget(self.pattern)
+        pattern_layout.addWidget(self.pattern_error)
         self.filter_kind.currentIndexChanged.connect(lambda index: self.pattern.setEnabled(index != 0))
-        for control in (self.recursive, self.include_generated, self.filter_kind, self.pattern):
+        self.filter_kind.currentIndexChanged.connect(self.validate_folder_filter)
+        self.pattern.textChanged.connect(self.validate_folder_filter)
+        for control in (self.recursive, self.include_generated, self.filter_kind, pattern_container):
             filters.addWidget(control)
         self.include_generated.hide()
         panel.addWidget(self.input_controls)
@@ -727,6 +774,7 @@ class MainWindow(QMainWindow):
         self.preferences_menu = self.menuBar().addMenu("Preferences")
         self.preferences_menu.addAction("Save Preset…", self.prompt_save_preset)
         self.preferences_menu.addAction("Load Preset…", self.prompt_load_preset)
+        self.preferences_menu.addAction("Delete Preset…", self.prompt_delete_preset)
         self.preferences_menu.addAction("Reset to Defaults", self.reset_preferences)
         controls = self.workflow_controls.get(0, WorkflowControls())
         self.recursive.setChecked(controls.recursive)
@@ -886,6 +934,31 @@ class MainWindow(QMainWindow):
         name, accepted = QInputDialog.getItem(self, "Load Preset", "Preset:", names, 0, False)
         if accepted:
             self.load_preset(name)
+
+    def prompt_delete_preset(self) -> None:
+        names = sorted(self.presets())
+        if not names or self.persistent_settings is None:
+            self.details.setPlainText("No saved presets.")
+            return
+        name, accepted = QInputDialog.getItem(self, "Delete Preset", "Preset:", names, 0, False)
+        if (
+            not accepted
+            or QMessageBox.question(
+                self,
+                "Delete Preset",
+                f"Delete the preset '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        presets = self.presets()
+        if name in presets:
+            del presets[name]
+            self.persistent_settings.setValue("presets", json.dumps(presets))
+            self.persistent_settings.sync()
+            self.details.setPlainText(f"Preset deleted: {name}")
 
     def show_help(self) -> None:
         QMessageBox.information(
@@ -1150,6 +1223,17 @@ class MainWindow(QMainWindow):
     def conflict_policy(self) -> ConflictPolicy:
         return ConflictPolicy(self.conflict.currentData())
 
+    def validate_folder_filter(self, *_args: object) -> None:
+        kind = self.filter_kind.currentIndex()
+        try:
+            validate_filter(
+                glob=self.pattern.text() if kind == 1 else None, regex=self.pattern.text() if kind == 2 else None
+            )
+        except DiscoveryError as exc:
+            self.pattern_error.setText(str(exc))
+        else:
+            self.pattern_error.clear()
+
     def select_files(self) -> None:
         names, _ = QFileDialog.getOpenFileNames(self, "Select files", self.recent_input_directory)
         if names:
@@ -1210,6 +1294,10 @@ class MainWindow(QMainWindow):
         if not self.start.isEnabled() or self.active_workflow == 5:
             return
         try:
+            self.validate_folder_filter()
+            if self.pattern_error.text():
+                self.pattern.setFocus()
+                raise ValueError(self.pattern_error.text())
             settings = self.desktop_settings()
             kind = self.filter_kind.currentIndex()
             pattern = self.pattern.text()
@@ -1323,8 +1411,13 @@ class MainWindow(QMainWindow):
 
     def show_batch_plan(self, rows: list[dict]) -> None:
         self.batch_table.setRowCount(len(rows))
+        blocked = any(row.get("error") for row in rows)
         for index, row in enumerate(rows):
-            for column, value in enumerate((row["source"], "\n".join(row["outputs"]), "Pending", "")):
+            error = row.get("error", "")
+            status = "Conflict" if error else "Blocked" if blocked else "Pending"
+            if blocked and not error:
+                error = "Another output in this batch has a conflict."
+            for column, value in enumerate((row["source"], "\n".join(row["outputs"]), status, error)):
                 self.batch_table.setItem(index, column, QTableWidgetItem(value))
             source_item = self.batch_table.item(index, 0)
             if source_item is not None:

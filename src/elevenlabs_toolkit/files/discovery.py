@@ -50,6 +50,16 @@ _TRANSCRIPT_PAYLOAD_KEYS = frozenset({"text", "words", "segments"})
 _CACHE_MANIFEST_KEYS = frozenset({"schema_version", "provider", "source", "transcript", "transcription"})
 
 
+def validate_filter(*, glob: str | None = None, regex: str | None = None) -> None:
+    """Validate explicit folder selectors without scanning the filesystem."""
+    if glob is not None and regex is not None:
+        raise DiscoveryError("Glob and regex selectors are mutually exclusive.")
+    if glob is not None:
+        _validate_glob(glob)
+    if regex is not None:
+        _compile_regex(regex)
+
+
 def discover_inputs(
     spec: InputSpec,
     allowed_suffixes: set[str],

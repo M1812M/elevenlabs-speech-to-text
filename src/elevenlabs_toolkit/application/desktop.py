@@ -17,6 +17,7 @@ from ..models import (
     ConflictPolicy,
     ExportOptions,
     JobPlan,
+    PlanConflict,
     ScriptMode,
     TranscriptionOptions,
 )
@@ -93,6 +94,8 @@ def prepare_files(
     policy: ConflictPolicy,
     formats: tuple[ArtifactFormat, ...],
     settings: DesktopSettings,
+    *,
+    allow_preview_conflicts: bool = False,
 ) -> tuple[PreparedFile, ...]:
     """Plan the complete selection before any processing or paid request."""
     if action not in {"Transcribe", "Convert Script", "Export", "Clean", "Inspect"}:
@@ -208,25 +211,43 @@ def prepare_files(
     source_paths = set(sources)
     source_ids = {(info.st_dev, info.st_ino) for info in (source.stat() for source in sources)}
     targets: dict[Path, Path] = {}
+    target_groups: dict[Path, list[tuple[int, Path]]] = {}
     for index, item in enumerate(prepared):
         artifacts = []
         for conflict in item.plan.conflicts:
-            raise PlanningError(f"{conflict.target}: {conflict.reason}")
+            if not allow_preview_conflicts:
+                raise PlanningError(f"{conflict.target}: {conflict.reason}")
         for artifact in item.plan.artifacts:
             target = artifact.target
             if policy is ConflictPolicy.RENAME and target in targets:
                 target = _renamed_target(target, set(targets))
                 artifact = replace(artifact, target=target)
-            if target in targets:
+            if target in targets and not allow_preview_conflicts:
                 raise PlanningError(f"Multiple selected files would write {target}")
             try:
                 info = target.stat()
             except FileNotFoundError:
                 info = None
             if target.resolve() in source_paths or (info is not None and (info.st_dev, info.st_ino) in source_ids):
-                raise PlanningError(f"Output would overwrite a selected input: {target}")
+                if not allow_preview_conflicts:
+                    raise PlanningError(f"Output would overwrite a selected input: {target}")
+                if not any(
+                    conflict.target == target and "overwrite" in conflict.reason for conflict in item.plan.conflicts
+                ):
+                    conflict = PlanConflict(target, (artifact.source,), "output would overwrite a selected input")
+                    item = replace(item, plan=replace(item.plan, conflicts=(*item.plan.conflicts, conflict)))
             targets[target] = artifact.source
+            target_groups.setdefault(target, []).append((index, artifact.source))
             artifacts.append(artifact)
-        if policy is ConflictPolicy.RENAME:
-            prepared[index] = replace(item, plan=replace(item.plan, artifacts=tuple(artifacts)))
+        prepared[index] = replace(item, plan=replace(item.plan, artifacts=tuple(artifacts)))
+    if allow_preview_conflicts:
+        for target, entries in target_groups.items():
+            if len(entries) < 2:
+                continue
+            conflict = PlanConflict(
+                target, tuple(source for _, source in entries), "multiple inputs map to the same output"
+            )
+            for index in {index for index, _ in entries}:
+                item = prepared[index]
+                prepared[index] = replace(item, plan=replace(item.plan, conflicts=(*item.plan.conflicts, conflict)))
     return tuple(prepared)

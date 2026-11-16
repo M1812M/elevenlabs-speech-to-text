@@ -326,7 +326,8 @@ The selected project configuration folder is remembered across launches and
 is included in named presets. If a preset's project folder is unavailable,
 choose or restore the folder before loading it.
 Folder filters apply within selected folders. Preview lists planned destinations
-and API requests. For Transcribe and Export, **Review before running** adds a
+and API requests, including existing-file conflicts under the error policy.
+For Transcribe and Export, **Review before running** adds a
 confirmation step before the planned job starts.
 Changing inputs or settings marks a displayed preview as out of date; run
 Preview again to check the new plan. Starting a batch always plans it again.
@@ -337,7 +338,7 @@ or use **Save Batch Report** to save the displayed rows as JSON. The report
 does not overwrite an existing file. **Stop After Current File** stops before
 the next file; rows not processed are marked **Not run**.
 
-The **Preferences** menu saves and loads named presets and resets settings.
+The **Preferences** menu saves, loads and deletes named presets, and resets settings.
 Presets contain workflow settings and the selected project folder, but never
 the credentials-file field or API key. **Reset to Defaults** clears the current
 credentials-file selection as well as workflow settings; saved presets remain.

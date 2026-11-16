@@ -70,6 +70,25 @@ def test_other_workflow_previews_become_stale_after_global_settings_change(
     window.close()
 
 
+@pytest.mark.parametrize(("kind", "invalid", "valid"), [(1, "../*.srt", "*.srt"), (2, "[", ".*srt")])
+def test_invalid_folder_filter_has_inline_error_before_start(tmp_path: Path, monkeypatch, kind, invalid, valid) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.add_paths([tmp_path])
+    window.filter_kind.setCurrentIndex(kind)
+    window.pattern.setText(invalid)
+    assert window.pattern_error.text()
+    window.start_job()
+    assert "Preflight failed" in window.details.toPlainText()
+    assert window.start.isEnabled()
+    window.pattern.setText(valid)
+    assert not window.pattern_error.text()
+    window.close()
+    app.processEvents()
+
+
 def test_batch_table_accepts_dropped_files_and_folders(tmp_path: Path, monkeypatch) -> None:
     from PySide6.QtCore import QMimeData, QPointF, QUrl
     from PySide6.QtGui import QDropEvent
@@ -672,10 +691,7 @@ def test_failed_preflight_preserves_previous_retryable_batch(tmp_path: Path, mon
     window.pattern.setText(pattern)
     old_worker = window.worker
     window.start_job()
-    if pattern:
-        assert window.worker is not old_worker
-        assert window.worker.wait(5000)
-        app.processEvents()
+    assert window.worker is old_worker
     assert "Preflight failed" in window.details.toPlainText()
     assert window.batch_table.rowCount() == 1
     assert window.batch_table.item(0, 2).text() == "failed"
@@ -1580,6 +1596,32 @@ def test_named_presets_and_reset_do_not_store_credentials(tmp_path: Path, monkey
     app.processEvents()
 
 
+def test_delete_preset_requires_confirmation_and_preserves_other_settings(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.save_preset("Keep")
+    window.save_preset("Remove")
+    window.transcription_options.model.setText("current-model")
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QInputDialog.getItem", lambda *args: ("Remove", True))
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QMessageBox.question", lambda *args: QMessageBox.StandardButton.No)
+    action = next(action for action in window.preferences_menu.actions() if action.text() == "Delete Preset…")
+    action.trigger()
+    assert set(window.presets()) == {"Keep", "Remove"}
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QMessageBox.question", lambda *args: QMessageBox.StandardButton.Yes)
+    action.trigger()
+    assert set(window.presets()) == {"Keep"}
+    assert window.transcription_options.model.text() == "current-model"
+    window.close()
+    restored = MainWindow(settings=settings)
+    assert set(restored.presets()) == {"Keep"}
+    restored.close()
+    app.processEvents()
+
+
 def test_reset_restores_configuration_profile_default(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
@@ -1761,6 +1803,171 @@ def test_transliteration_conflicts_match_cli(tmp_path: Path, monkeypatch, capsys
         path.name: path.read_bytes() for path in cli_dir.iterdir()
     }
     assert source.read_bytes() == original
+    window.close()
+
+
+def test_transcription_conflict_preview_matches_cli_request_count(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    sources = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    for source in sources:
+        source.write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    cli_dir.mkdir()
+    gui_dir.mkdir()
+    (cli_dir / "a.json").write_text("existing", encoding="utf-8")
+    (gui_dir / "a.wav.transcript.json").write_text("existing", encoding="utf-8")
+    assert (
+        main(
+            [
+                "--json",
+                "transcribe",
+                *(str(source) for source in sources),
+                "-o",
+                str(cli_dir),
+                "--on-conflict",
+                "error",
+                "--dry-run",
+            ]
+        )
+        != 0
+    )
+    cli = json.loads(capsys.readouterr().out)
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.output_directory.setText(str(gui_dir))
+    window.conflict.setCurrentIndex(window.conflict.findData("error"))
+    window.report_mode.setCurrentText("JSON")
+    window.add_paths(sources)
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    preview = json.loads(window.details.toPlainText())
+    assert preview["status"] == cli["status"] == "conflict"
+    assert preview["api_requests"] == cli["api_requests"] == 0
+    assert preview["max_api_attempts"] == 0
+    assert preview["conflicts"][0]["target"] == str(gui_dir / "a.wav.transcript.json")
+    assert window.batch_table.item(0, 2).text() == "Conflict"
+    assert window.batch_table.item(1, 2).text() == "Blocked"
+    assert "another" in window.batch_table.item(1, 3).text().lower()
+    assert not (gui_dir / "b.wav.transcript.json").exists()
+    window.close()
+
+
+def test_preview_reports_source_overwrite_conflict_without_writing(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "input CYR.srt"
+    source.write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    original = source.read_bytes()
+    assert (
+        main(
+            [
+                "--json",
+                "transliterate",
+                str(source),
+                "--to",
+                "cyrillic",
+                "-o",
+                str(tmp_path),
+                "--on-conflict",
+                "replace",
+                "--dry-run",
+            ]
+        )
+        != 0
+    )
+    cli = json.loads(capsys.readouterr().out)
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.conflict.setCurrentIndex(window.conflict.findData("replace"))
+    window.report_mode.setCurrentText("JSON")
+    window.add_paths([source])
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    preview = json.loads(window.details.toPlainText())
+    assert preview["status"] == cli["status"] == "conflict"
+    assert preview["conflicts"][0]["target"] == str(source)
+    assert "overwrite" in window.batch_table.item(0, 3).text().lower()
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert source.read_bytes() == original
+    window.close()
+
+
+def test_preview_shows_conflicts_between_selected_inputs(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    sources = [tmp_path / "input LTN.srt", tmp_path / "input.latin.srt"]
+    for source in sources:
+        source.write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    originals = [source.read_bytes() for source in sources]
+    output = tmp_path / "out"
+    assert (
+        main(
+            [
+                "--json",
+                "transliterate",
+                *(str(source) for source in sources),
+                "--to",
+                "cyrillic",
+                "-o",
+                str(output),
+                "--dry-run",
+            ]
+        )
+        != 0
+    )
+    cli = json.loads(capsys.readouterr().out)
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.output_directory.setText(str(output))
+    window.report_mode.setCurrentText("JSON")
+    window.add_paths(sources)
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    preview = json.loads(window.details.toPlainText())
+    assert preview["status"] == cli["status"] == "conflict"
+    assert len(preview["conflicts"]) == 1
+    assert set(preview["conflicts"][0]["sources"]) == {str(source) for source in sources}
+    assert all(window.batch_table.item(row, 2).text() == "Conflict" for row in range(2))
+    assert not output.exists()
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "failed" in window.details.toPlainText().lower()
+    assert not output.exists()
+    assert [source.read_bytes() for source in sources] == originals
+    window.close()
+
+
+def test_preview_shows_existing_output_conflict_without_writing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "input.txt"
+    source.write_text("Salom", encoding="utf-8")
+    target = tmp_path / "input CYR.txt"
+    target.write_text("existing", encoding="utf-8")
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.conflict.setCurrentIndex(window.conflict.findData("error"))
+    window.add_paths([source])
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.batch_table.item(0, 1).text() == str(target)
+    assert "conflict" in window.batch_table.item(0, 2).text().lower()
+    assert "already exists" in window.batch_table.item(0, 3).text().lower()
+    assert "conflict" in window.details.toPlainText().lower()
+    assert target.read_text(encoding="utf-8") == "existing"
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "Preflight failed" in window.details.toPlainText()
+    assert target.read_text(encoding="utf-8") == "existing"
     window.close()
 
 
@@ -2110,8 +2317,9 @@ def test_gui_and_cli_report_invalid_or_empty_folder_filters(
     window.pattern.setText(pattern)
     window.add_paths([folder])
     window.start_job()
-    assert window.worker.wait(5000)
-    app.processEvents()
+    if kind == "glob":
+        assert window.worker.wait(5000)
+        app.processEvents()
     assert "Preflight failed" in window.details.toPlainText()
     assert not cli_dir.exists()
     assert not gui_dir.exists()
