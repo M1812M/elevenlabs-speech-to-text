@@ -1,14 +1,69 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QGroupBox, QLineEdit, QPlainTextEdit, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .application.desktop import DesktopSettings
 from .cli.transcribe import LOCAL_FORMATS, REMOTE_FORMATS
 from .config import available_profiles
-from .models import ScriptMode, TranscriptionOptions
+from .languages.replacements import replacement_parts
+from .models import ArtifactFormat, ScriptMode, TranscriptionOptions
+
+FORMAT_DESCRIPTIONS = {
+    ArtifactFormat.SRT: ("Subtitles (SRT)", "Timed subtitles using the selected segmentation and timing settings."),
+    ArtifactFormat.SRT_MINI: ("Short subtitles (SRT)", "Short subtitle cues for quick, compact display."),
+    ArtifactFormat.TXT: ("Transcript text (TXT)", "Plain text organized into sentences."),
+    ArtifactFormat.COMBINED_TXT: ("Combined text (TXT)", "Combine transcripts into one text file with source names."),
+    ArtifactFormat.RESOLVE_EDL: (
+        "Resolve markers (EDL)",
+        "DaVinci Resolve marker list using the selected marker settings.",
+    ),
+    ArtifactFormat.CUE_INDEX_SRT: ("Cue index (SRT)", "Numbered subtitle cues for identifying corresponding segments."),
+    ArtifactFormat.CLEAN_JSON: (
+        "Cleaned transcript (JSON)",
+        "An Uzbek-cleaned JSON derivative with timing information.",
+    ),
+}
+
+
+class CollapsibleSection(QWidget):
+    """Show or hide controls without changing whether their values apply."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.toggle = QToolButton()
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.content = QWidget()
+        self.content.hide()
+        self.toggle.toggled.connect(self.content.setVisible)
+        self.toggle.toggled.connect(
+            lambda expanded: self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        )
+        layout.addWidget(self.toggle)
+        layout.addWidget(self.content)
 
 
 class TextOptionsPanel(QWidget):
@@ -17,6 +72,9 @@ class TextOptionsPanel(QWidget):
     def __init__(self, *, clean: bool = False, advanced: bool = False) -> None:
         super().__init__()
         self.clean = clean
+        self.numeric_errors: dict[str, QLabel] = {}
+        self.numeric_inputs: dict[str, QLineEdit] = {}
+        self.numeric_labels: dict[str, str] = {}
         layout = QFormLayout(self)
         self.profile = QComboBox()
         self.profile.setEditable(True)
@@ -39,8 +97,20 @@ class TextOptionsPanel(QWidget):
         self.replacements.setPlaceholderText("One replacement per line, for example Acme=ACME")
         self.replacements.setMaximumHeight(65)
         self.replacements.setEnabled(False)
+        self.replacements.setToolTip("Enter one non-empty TOKEN=TOKEN replacement per line, without spaces in tokens.")
+        self.replacement_error = QLabel()
+        self.replacement_error.setStyleSheet("color: #b00020")
+        self.replacement_error.setWordWrap(True)
+        replacement_container = QWidget()
+        replacement_layout = QVBoxLayout(replacement_container)
+        replacement_layout.setContentsMargins(0, 0, 0, 0)
+        replacement_layout.setSpacing(0)
+        replacement_layout.addWidget(self.replacements)
+        replacement_layout.addWidget(self.replacement_error)
         self.override_replacements.toggled.connect(self.replacements.setEnabled)
-        layout.addRow("Token replacements", self.replacements)
+        self.override_replacements.toggled.connect(self.validate_replacements)
+        self.replacements.textChanged.connect(self.validate_replacements)
+        layout.addRow("Token replacements", replacement_container)
         self.advanced = advanced
         self.numeric_fields = {}
         self.boolean_fields = {}
@@ -49,11 +119,10 @@ class TextOptionsPanel(QWidget):
         self.marker_color = QLineEdit("ResolveColorBlue")
         self.marker_prefix = QLineEdit("Sentence")
         self.combined_name = QLineEdit("combined.txt")
+        self.advanced_section: CollapsibleSection | None = None
         if advanced:
-            group = QGroupBox("Advanced subtitle and Resolve settings")
-            group.setCheckable(True)
-            group.setChecked(False)
-            advanced_layout = QFormLayout(group)
+            self.advanced_section = CollapsibleSection("Advanced subtitle and Resolve settings")
+            advanced_layout = QFormLayout(self.advanced_section.content)
             fields = (
                 ("max_chars_per_line", "Maximum characters per line", int),
                 ("max_lines", "Maximum lines", int),
@@ -70,7 +139,17 @@ class TextOptionsPanel(QWidget):
                 field = QLineEdit()
                 field.setPlaceholderText("Profile default")
                 self.numeric_fields[name] = (field, converter)
-                advanced_layout.addRow(label, field)
+                allow_zero = name in {"min_duration", "srt_padding_frames", "srt_gap_milliseconds"}
+                self.add_numeric_field(
+                    advanced_layout,
+                    name,
+                    label,
+                    field,
+                    converter,
+                    optional=True,
+                    minimum=0,
+                    exclusive_minimum=not allow_zero,
+                )
             for name, label in (
                 ("pause_detection", "Pause detection"),
                 ("split_on_speaker_change", "Split on speaker change"),
@@ -82,11 +161,95 @@ class TextOptionsPanel(QWidget):
                 self.boolean_fields[name] = choice
                 advanced_layout.addRow(label, choice)
             advanced_layout.addRow(self.smart)
-            advanced_layout.addRow("Resolve marker FPS", self.marker_fps)
+            self.add_numeric_field(
+                advanced_layout,
+                "marker_fps",
+                "Resolve marker FPS",
+                self.marker_fps,
+                float,
+                minimum=0,
+                exclusive_minimum=True,
+            )
             advanced_layout.addRow("Resolve marker colour", self.marker_color)
             advanced_layout.addRow("Resolve marker prefix", self.marker_prefix)
             advanced_layout.addRow("Combined text filename", self.combined_name)
-            layout.addRow(group)
+            layout.addRow(self.advanced_section)
+
+    def add_numeric_field(
+        self,
+        form: QFormLayout,
+        name: str,
+        label: str,
+        field: QLineEdit,
+        converter: type,
+        *,
+        optional: bool = False,
+        minimum: float | None = None,
+        maximum: float | None = None,
+        exclusive_minimum: bool = False,
+    ) -> None:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        error = QLabel()
+        error.setStyleSheet("color: #b00020")
+        error.setWordWrap(True)
+        layout.addWidget(field)
+        layout.addWidget(error)
+        form.addRow(label, container)
+        self.numeric_errors[name] = error
+        self.numeric_inputs[name] = field
+        self.numeric_labels[name] = label
+        hint = "Enter a whole number" if converter is int else "Enter a finite number"
+        if minimum is not None and maximum is not None:
+            hint += f" between {minimum:g} and {maximum:g}"
+        elif minimum is not None and exclusive_minimum:
+            hint += f" greater than {minimum:g}"
+        elif minimum is not None:
+            hint += f" of at least {minimum:g}"
+        if optional:
+            hint += ", or leave blank"
+        field.setToolTip(hint)
+
+        def validate(text: str) -> None:
+            if optional and not text.strip():
+                error.clear()
+                return
+            try:
+                number = converter(text)
+                valid = (
+                    math.isfinite(number)
+                    and (minimum is None or (number > minimum if exclusive_minimum else number >= minimum))
+                    and (maximum is None or number <= maximum)
+                )
+            except (ValueError, OverflowError):
+                valid = False
+            error.setText("" if valid else hint)
+
+        field.textChanged.connect(validate)
+        validate(field.text())
+
+    def validate_replacements(self) -> None:
+        self.replacement_error.clear()
+        if not self.override_replacements.isChecked():
+            return
+        for line_number, line in enumerate(self.replacements.toPlainText().splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                replacement_parts(line.strip())
+            except ValueError as exc:
+                self.replacement_error.setText(f"Line {line_number}: {exc}")
+                return
+
+    def validate_numeric_fields(self) -> None:
+        for name, error in self.numeric_errors.items():
+            if error.text():
+                if self.advanced_section is not None and self.advanced_section.content.isAncestorOf(error):
+                    self.advanced_section.toggle.setChecked(True)
+                self.numeric_inputs[name].setFocus()
+                raise ValueError(f"{self.numeric_labels[name]}: {error.text()}")
 
     def refresh_profiles(self, directory: Path) -> None:
         selected = self.profile.currentText()
@@ -98,7 +261,32 @@ class TextOptionsPanel(QWidget):
         if selected != "Project default":
             self.profile.setCurrentText(selected)
 
+    def preference_controls(self) -> dict[str, QWidget]:
+        controls: dict[str, QWidget] = {
+            name: getattr(self, name)
+            for name in (
+                "profile",
+                "script",
+                "cleanup",
+                "override_replacements",
+                "replacements",
+                "smart",
+                "marker_fps",
+                "marker_color",
+                "marker_prefix",
+                "combined_name",
+            )
+        }
+        controls.update({f"number.{key}": field for key, (field, _) in self.numeric_fields.items()})
+        controls.update({f"boolean.{key}": field for key, field in self.boolean_fields.items()})
+        return controls
+
     def settings(self, directory: Path) -> DesktopSettings:
+        self.validate_numeric_fields()
+        self.validate_replacements()
+        if self.replacement_error.text():
+            self.replacements.setFocus()
+            raise ValueError(f"Token replacements: {self.replacement_error.text()}")
         profile = self.profile.currentText().strip()
         replacements = None
         if self.override_replacements.isChecked():
@@ -123,7 +311,7 @@ class TextOptionsPanel(QWidget):
             combined_name=self.combined_name.text(),
             project_directory=directory,
             profile=None if profile == "Project default" else profile,
-            output_script=self.script.currentData(),
+            output_script=ScriptMode(self.script.currentData()) if self.script.currentData() is not None else None,
             replacements=replacements,
             cleanup="uzbek" if self.clean else self.cleanup.currentData(),
         )
@@ -150,38 +338,161 @@ class TranscriptionPanel(TextOptionsPanel):
         self.keyterms = QPlainTextEdit()
         self.keyterms.setMaximumHeight(65)
         self.keyterms.setPlaceholderText("One keyterm per line")
+        self.keyterms.setToolTip("One keyterm per line, fewer than 50 characters and at most 5 words each.")
+        self.model_error = QLabel()
+        self.keyterms_error = QLabel()
+        self.verbatim_error = QLabel()
+        for error in (self.model_error, self.keyterms_error, self.verbatim_error):
+            error.setStyleSheet("color: #b00020")
+            error.setWordWrap(True)
+
+        def with_error(control: QWidget, error: QLabel) -> QWidget:
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.addWidget(control)
+            layout.addWidget(error)
+            return container
+
+        model_control = with_error(self.model, self.model_error)
+        keyterms_control = with_error(self.keyterms, self.keyterms_error)
+        verbatim_control = with_error(self.no_verbatim, self.verbatim_error)
+        self.model.textChanged.connect(self.validate_transcription_text)
+        self.keyterms.textChanged.connect(self.validate_transcription_text)
+        self.no_verbatim.toggled.connect(self.validate_transcription_text)
         self.env_file = QLineEdit()
         self.env_file.setPlaceholderText("Project .env")
+        self.env_file.setToolTip(
+            "Select an existing dotenv file containing ELEVENLABS_API_KEY; the path is not saved. "
+            "See Help → Credentials and API Costs for setup."
+        )
+        self.choose_credentials = QPushButton("Browse…")
+        self.choose_credentials.clicked.connect(self.select_credentials_file)
+        credentials = QWidget()
+        credentials_layout = QHBoxLayout(credentials)
+        credentials_layout.setContentsMargins(0, 0, 0, 0)
+        credentials_layout.addWidget(self.env_file)
+        credentials_layout.addWidget(self.choose_credentials)
         self.retries = QLineEdit("0")
         self.backoff = QLineEdit("1")
         self.delay = QLineEdit("0")
         for label, control in (
-            ("Model", self.model),
+            ("Model", model_control),
             ("Language code", self.language),
             ("Timestamps", self.timestamps),
             ("Speaker count", self.num_speakers),
             ("Seed", self.seed),
             ("Temperature", self.temperature),
-            ("Keyterms", self.keyterms),
-            ("Credentials file", self.env_file),
+            ("Keyterms", keyterms_control),
+            ("Credentials file", credentials),
             ("Retries", self.retries),
             ("Retry backoff (seconds)", self.backoff),
             ("Request delay (seconds)", self.delay),
         ):
-            form.addRow(label, control)
-        for checkbox in (self.diarize, self.audio_events, self.no_verbatim):
-            form.addRow(checkbox)
-        self.local_formats = {value: QCheckBox(value.value.upper()) for value in LOCAL_FORMATS}
+            numeric = {
+                "Speaker count": ("num_speakers", int, True, 1, 32),
+                "Seed": ("seed", int, True, 0, 2147483647),
+                "Temperature": ("temperature", float, True, 0, 2),
+                "Retries": ("retries", int, False, 0, None),
+                "Retry backoff (seconds)": ("backoff", float, False, 0, None),
+                "Request delay (seconds)": ("delay", float, False, 0, None),
+            }
+            if label in numeric:
+                name, converter, optional, minimum, maximum = numeric[label]
+                assert isinstance(control, QLineEdit)
+                self.add_numeric_field(
+                    form, name, label, control, converter, optional=optional, minimum=minimum, maximum=maximum
+                )
+            else:
+                form.addRow(label, control)
+        self.model.setToolTip("ElevenLabs speech-to-text model ID. The default is scribe_v2.")
+        self.language.setToolTip("Optional language code, such as uz. Leave blank for automatic detection.")
+        self.timestamps.setToolTip(
+            "Choose character, word, or no timestamps. Timed subtitles need timestamps; pause detection needs character timestamps."
+        )
+        self.diarize.setToolTip("Identify different speakers in the transcription.")
+        self.audio_events.setToolTip("Include detected audio events, such as laughter, in the transcription.")
+        self.no_verbatim.setToolTip("Ask the scribe_v2 model to remove fillers and false starts.")
+        self.num_speakers.setToolTip(self.num_speakers.toolTip() + ". Used when speaker identification is enabled.")
+        self.seed.setToolTip(self.seed.toolTip() + ". Optional provider seed for transcription.")
+        self.temperature.setToolTip(self.temperature.toolTip() + ". Optional provider sampling setting.")
+        self.retries.setToolTip(self.retries.toolTip() + ". Additional attempts may incur API charges.")
+        self.backoff.setToolTip(self.backoff.toolTip() + ". Delay before retrying a transient provider error.")
+        self.delay.setToolTip(self.delay.toolTip() + ". Minimum wait between requests for different files.")
+        for control in (self.diarize, self.audio_events, verbatim_control):
+            form.addRow(control)
+        self.local_formats = {value: QCheckBox(FORMAT_DESCRIPTIONS[value][0]) for value in LOCAL_FORMATS}
         self.remote_formats = {value: QCheckBox(value.upper()) for value in REMOTE_FORMATS}
-        for checkbox in self.local_formats.values():
+        for value, checkbox in self.local_formats.items():
+            checkbox.setToolTip(FORMAT_DESCRIPTIONS[value][1] + " Rendered locally from the transcription response.")
             form.addRow("Local output", checkbox)
         for checkbox in self.remote_formats.values():
+            checkbox.setToolTip("Requested from ElevenLabs during transcription; a new request may incur charges.")
             form.addRow("Provider output", checkbox)
         layout = self.layout()
         assert isinstance(layout, QFormLayout)
         layout.insertRow(0, group)
 
+    def validate_transcription_text(self) -> None:
+        self.model_error.clear()
+        self.keyterms_error.clear()
+        self.verbatim_error.clear()
+        try:
+            TranscriptionOptions(model_id=self.model.text())
+        except ValueError as exc:
+            self.model_error.setText(str(exc))
+        keyterms = tuple(line.strip() for line in self.keyterms.toPlainText().splitlines() if line.strip())
+        try:
+            TranscriptionOptions(keyterms=keyterms)
+        except ValueError as exc:
+            self.keyterms_error.setText(str(exc))
+        if self.no_verbatim.isChecked() and self.model.text().strip() != "scribe_v2":
+            self.verbatim_error.setText("Removing fillers is supported only by the scribe_v2 model.")
+
+    def select_credentials_file(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select Credentials File", self.env_file.text(), "All files (*)"
+        )
+        if filename:
+            self.env_file.setText(filename)
+
+    def preference_controls(self) -> dict[str, QWidget]:
+        controls = super().preference_controls()
+        controls.update(
+            {
+                name: getattr(self, name)
+                for name in (
+                    "model",
+                    "language",
+                    "timestamps",
+                    "diarize",
+                    "audio_events",
+                    "no_verbatim",
+                    "num_speakers",
+                    "seed",
+                    "temperature",
+                    "keyterms",
+                    "retries",
+                    "backoff",
+                    "delay",
+                )
+            }
+        )
+        controls.update({f"local.{key.value}": field for key, field in self.local_formats.items()})
+        controls.update({f"remote.{key}": field for key, field in self.remote_formats.items()})
+        return controls
+
     def settings(self, directory: Path) -> DesktopSettings:
+        self.validate_transcription_text()
+        for error, control in (
+            (self.model_error, self.model),
+            (self.keyterms_error, self.keyterms),
+            (self.verbatim_error, self.no_verbatim),
+        ):
+            if error.text():
+                control.setFocus()
+                raise ValueError(error.text())
         env_file = self.env_file.text().strip()
         return replace(
             super().settings(directory),

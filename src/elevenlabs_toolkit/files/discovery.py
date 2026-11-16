@@ -58,6 +58,7 @@ def discover_inputs(
     *,
     should_stop: Callable[[], bool] | None = None,
     exclude_folder_suffixes: tuple[str, ...] = (),
+    exclude_directory_names: tuple[str, ...] = (),
 ) -> tuple[Path, ...]:
     """Resolve an explicit input specification to a stable collection of files.
 
@@ -105,6 +106,7 @@ def discover_inputs(
             case_insensitive_glob=case_insensitive_glob,
             should_stop=should_stop,
             exclude_folder_suffixes=exclude_folder_suffixes,
+            exclude_directory_names=exclude_directory_names,
         )
         if not matches:
             selector = _selector_description(glob_pattern, spec.regex)
@@ -191,6 +193,7 @@ def _discover_in_directory(
     case_insensitive_glob: bool,
     should_stop: Callable[[], bool] | None,
     exclude_folder_suffixes: tuple[str, ...],
+    exclude_directory_names: tuple[str, ...],
 ) -> tuple[Path, ...]:
     try:
         if glob_pattern is not None:
@@ -206,6 +209,8 @@ def _discover_in_directory(
             if should_stop is not None and should_stop():
                 raise DiscoveryCancelled("Input scanning cancelled")
             if not candidate.is_file():
+                continue
+            if any(part.casefold() in exclude_directory_names for part in candidate.relative_to(directory).parts[:-1]):
                 continue
             if candidate.suffix.casefold() not in suffixes:
                 continue

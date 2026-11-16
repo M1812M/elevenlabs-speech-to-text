@@ -13,6 +13,87 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-package:
+    name: Test GUI and build Windows app
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+      - name: Install locked GUI and development dependencies
+        run: uv sync --locked --extra dev --extra gui --extra stt --python 3.13
+      - name: Run desktop tests
+        run: uv run --locked --python 3.13 --extra dev --extra gui --extra stt pytest tests/unit/gui tests/unit/test_gui_launcher.py
+      - name: Install packaging tool
+        run: uv pip install --python .venv/Scripts/python.exe pyinstaller==6.22.3
+      - name: Build Windows application
+        run: .venv/Scripts/python.exe scripts/build_gui.py
+      - name: Test bundled application without an API request
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath 'dist/ElevenLabs Toolkit/ElevenLabs Toolkit.exe' -ArgumentList '--self-test' -Wait -PassThru
+          if ($app.ExitCode -ne 0) { throw "Desktop self-test failed with exit code $($app.ExitCode)" }
+      - name: Archive application folder
+        run: Compress-Archive -Path 'dist/ElevenLabs Toolkit' -DestinationPath 'dist/ElevenLabs-Toolkit-Windows.zip'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ElevenLabs-Toolkit-Windows
+          path: dist/ElevenLabs-Toolkit-Windows.zip
+          if-no-files-found: error
+
+  macos-package:
+    name: Build and smoke-test macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+      - name: Install locked application dependencies
+        run: uv sync --locked --no-dev --extra gui --extra stt --python 3.13
+      - name: Install packaging tool
+        run: uv pip install --python .venv/bin/python pyinstaller==6.22.3
+      - name: Build app bundle
+        run: .venv/bin/python scripts/build_gui.py
+      - name: Test bundled app without an API request
+        run: QT_QPA_PLATFORM=offscreen 'dist/ElevenLabs Toolkit.app/Contents/MacOS/ElevenLabs Toolkit' --self-test
+      - name: Archive app bundle with macOS metadata
+        run: ditto -c -k --keepParent 'dist/ElevenLabs Toolkit.app' 'dist/ElevenLabs-Toolkit-macOS.zip'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ElevenLabs-Toolkit-macOS
+          path: dist/ElevenLabs-Toolkit-macOS.zip
+          if-no-files-found: error
+
+  gui:
+    name: Desktop tests (Python 3.13)
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+      - name: Install GUI dependencies
+        run: uv sync --locked --extra dev --extra stt --extra gui --python 3.13
+      - name: Run desktop tests
+        run: |
+          uv run --locked --python 3.13 --extra dev --extra stt --extra gui python -c "import PySide6.QtWidgets"
+          uv run --locked --python 3.13 --extra dev --extra stt --extra gui pytest tests/unit/gui tests/unit/test_gui_launcher.py
+
   quality:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -40,19 +121,19 @@ jobs:
         run: uv sync --locked --extra dev --extra stt --python "${{ matrix.python-version }}"
 
       - name: Lint
-        run: uv run --locked --extra dev --extra stt ruff check .
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev --extra stt ruff check .
 
       - name: Check formatting
-        run: uv run --locked --extra dev --extra stt ruff format --check .
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev --extra stt ruff format --check .
 
       - name: Type check
-        run: uv run --locked --extra dev --extra stt mypy src
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev --extra stt mypy src
 
       - name: Test
-        run: uv run --locked --extra dev --extra stt pytest
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev --extra stt pytest
 
       - name: Smoke-test direct Python script
-        run: uv run --locked --extra dev --extra stt python run_toolkit.py --help
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev --extra stt python run_toolkit.py --help
 
       - name: Minimize uv cache
         if: always()

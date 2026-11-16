@@ -7,6 +7,7 @@ their explicit output-directory behavior.
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -32,9 +33,14 @@ from .planner import (
 PROJECT_DIRECTORY = Path(__file__).resolve().parents[3]
 
 
+def desktop_project_directory() -> Path:
+    """Use a writable, stable configuration context when running as a bundled app."""
+    return Path.home() if getattr(sys, "frozen", False) else PROJECT_DIRECTORY
+
+
 @dataclass(frozen=True)
 class DesktopSettings:
-    project_directory: Path = PROJECT_DIRECTORY
+    project_directory: Path = field(default_factory=desktop_project_directory)
     profile: str | None = None
     output_script: ScriptMode | None = None
     replacements: tuple[str, ...] | None = None
@@ -52,9 +58,10 @@ class DesktopSettings:
     retry_backoff: float = 1.0
     request_delay: float = 0.0
     output_directory: Path | None = None
+    output_subfolder: bool = False
     fail_fast: bool = False
 
-    def configuration(self, *, clean: bool = False) -> dict:
+    def configuration_overrides(self, *, clean: bool = False) -> dict[str, object]:
         overrides: dict[str, object] = {f"segmentation.{name}": value for name, value in self.segmentation}
         if self.output_script is not None:
             overrides["text.script"] = self.output_script.value
@@ -64,7 +71,12 @@ class DesktopSettings:
             overrides["text.cleanup"] = None if self.cleanup == "none" else self.cleanup
         if clean:
             overrides["text.cleanup"] = "uzbek"
-        return effective_config(self.profile, overrides=overrides, cwd=self.project_directory)
+        return overrides
+
+    def configuration(self, *, clean: bool = False) -> dict:
+        return effective_config(
+            self.profile, overrides=self.configuration_overrides(clean=clean), cwd=self.project_directory
+        )
 
 
 @dataclass(frozen=True)
@@ -97,12 +109,16 @@ def prepare_files(
             if not math.isfinite(delay) or delay < 0:
                 raise ValueError("Request delay and retry backoff must be finite and non-negative")
     output_directory = settings.output_directory
+    if output_directory is not None and settings.output_subfolder:
+        raise ValueError("Choose either a custom output folder or an Output subfolder, not both")
     common_parent = _common_parent(sources) if output_directory is not None else None
     prepared = []
     for source in sources:
         directory = (
             output_directory / _relative_parent(source, common_parent)
             if output_directory is not None and common_parent is not None
+            else source.parent / "Output"
+            if settings.output_subfolder
             else source.parent
         )
         if action == "Export" and formats == (ArtifactFormat.COMBINED_TXT,):
@@ -171,11 +187,20 @@ def prepare_files(
         directories = (
             (output_directory,)
             if output_directory is not None
-            else tuple(dict.fromkeys(source.parent for source in sources))
+            else tuple(
+                dict.fromkeys(
+                    source.parent / "Output" if settings.output_subfolder else source.parent for source in sources
+                )
+            )
         )
         for directory in directories:
             group = tuple(
-                sorted(source for source in sources if output_directory is not None or source.parent == directory)
+                sorted(
+                    source
+                    for source in sources
+                    if output_directory is not None
+                    or (source.parent / "Output" if settings.output_subfolder else source.parent) == directory
+                )
             )
             options = ExportOptions((ArtifactFormat.COMBINED_TXT,), directory, segmentation, text)
             plan = plan_exports(group, options, policy=policy, combined_name=settings.combined_name)

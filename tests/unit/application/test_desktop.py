@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,14 @@ import pytest
 from elevenlabs_toolkit.application.desktop import DesktopSettings, prepare_files
 from elevenlabs_toolkit.application.planner import PlanningError
 from elevenlabs_toolkit.models import ArtifactFormat, ConflictPolicy, ScriptMode, TranscriptionOptions
+
+
+def test_packaged_desktop_defaults_to_user_home_not_bundle(tmp_path: Path, monkeypatch) -> None:
+    from elevenlabs_toolkit.application.desktop import desktop_project_directory
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert desktop_project_directory() == tmp_path
 
 
 def test_transcription_same_stem_keeps_distinct_json_outputs(tmp_path: Path) -> None:
@@ -101,6 +110,26 @@ def test_txt_conversion_has_txt_plan_and_strips_previous_script_suffix(tmp_path:
     )
     assert item.plan.artifacts[0].format is ArtifactFormat.TXT
     assert item.plan.artifacts[0].target == tmp_path / "text CYR.txt"
+
+
+def test_output_subfolder_is_created_per_source_directory(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "a.srt"
+    second = tmp_path / "two" / "b.srt"
+    for source in (first, second):
+        source.parent.mkdir()
+        source.write_text("Salom", encoding="utf-8")
+    prepared = prepare_files(
+        "Convert Script",
+        (first, second),
+        ScriptMode.CYRILLIC,
+        ConflictPolicy.SKIP,
+        (),
+        DesktopSettings(project_directory=tmp_path, output_subfolder=True),
+    )
+    assert [item.plan.artifacts[0].target for item in prepared] == [
+        first.parent / "Output" / "a CYR.srt",
+        second.parent / "Output" / "b CYR.srt",
+    ]
 
 
 def test_combined_export_groups_sources_by_directory(tmp_path: Path) -> None:

@@ -235,6 +235,33 @@ def effective_config(
     }
 
 
+def configuration_sources(
+    profile: str | None = None,
+    *,
+    overrides: Mapping[str, Any] | None = None,
+    cwd: str | Path | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Describe the selected profile and winning source for each effective option."""
+    effective = effective_config(profile, overrides=overrides, cwd=cwd)
+    user = _resolve_user_source(None, None)
+    project = _resolve_project_source(None, None, cwd)
+    selected = effective["profile"]
+    profile_settings = _profile_definitions(user, project)[selected]
+    origins = {
+        f"{section}.{name}": "built-in default" for section in ("segmentation", "text") for name in effective[section]
+    }
+    for label, layer in (
+        ("user configuration", _root_options(user)),
+        ("project configuration", _root_options(project)),
+        (f"profile: {selected}", profile_settings),
+        ("workflow override", _root_options(_normalise_overrides(overrides))),
+    ):
+        for section in ("segmentation", "text"):
+            for name in layer.get(section, {}):
+                origins[f"{section}.{name}"] = label
+    return _copy_mapping(profile_settings), origins
+
+
 def profile_options(
     name: str,
     config: Mapping[str, Any] | None = None,
@@ -480,6 +507,7 @@ def _deep_merge(target: dict[str, Any], incoming: Mapping[str, Any]) -> None:
 __all__ = [
     "ConfigurationError",
     "available_profiles",
+    "configuration_sources",
     "discover_project_config",
     "effective_config",
     "profile_options",

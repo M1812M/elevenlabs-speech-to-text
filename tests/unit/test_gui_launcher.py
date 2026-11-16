@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,21 @@ from types import SimpleNamespace
 import pytest
 
 LAUNCHER = Path(__file__).resolve().parents[2] / "run_gui.py"
+
+
+def test_launcher_self_test_exercises_window_and_offline_conversion() -> None:
+    pytest.importorskip("PySide6")
+    environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    result = subprocess.run(
+        [sys.executable, str(LAUNCHER), "--self-test"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Desktop self-test passed" in result.stdout
 
 
 def test_launcher_uses_project_environment_when_pyside_is_missing(tmp_path: Path, monkeypatch) -> None:

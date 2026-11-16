@@ -5,14 +5,1792 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from elevenlabs_toolkit.application.desktop import DesktopSettings
 from elevenlabs_toolkit.application.inspection import inspect_transcript
 from elevenlabs_toolkit.cli.main import main
 from elevenlabs_toolkit.gui import MainWindow, Worker
-from elevenlabs_toolkit.models import ScriptMode
+from elevenlabs_toolkit.models import ArtifactFormat, ConflictPolicy, InputSpec, ScriptMode
+
+
+@pytest.mark.parametrize("change", ["input", "script", "output"])
+def test_preview_is_marked_outdated_after_changes(tmp_path: Path, monkeypatch, change: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "first.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    if change == "input":
+        other = tmp_path / "other.txt"
+        other.write_text("Salom", encoding="utf-8")
+        window.add_paths([other])
+    elif change == "script":
+        window.mode.setCurrentText("Latin")
+    else:
+        window.output_subfolder.setChecked(True)
+    assert "out of date" in window.batch_table.item(0, 2).text().lower()
+    assert "preview again" in window.details.toPlainText().lower()
+    window.close()
+
+
+@pytest.mark.parametrize("change", ["project", "preset", "reset"])
+def test_other_workflow_previews_become_stale_after_global_settings_change(
+    tmp_path: Path, monkeypatch, change: str
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.save_preset("Defaults")
+    source = transcript(tmp_path / "input.json")
+    window.navigation.setCurrentRow(2)
+    window.add_paths([source])
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    window.navigation.setCurrentRow(5)
+    if change == "project":
+        monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getExistingDirectory", lambda *args: str(tmp_path))
+        window.select_project()
+    elif change == "preset":
+        window.load_preset("Defaults")
+    else:
+        window.reset_preferences()
+    window.navigation.setCurrentRow(2)
+    assert "out of date" in window.batch_table.item(0, 2).text().lower()
+    assert "preview again" in window.details.toPlainText().lower()
+    window.close()
+
+
+def test_batch_table_accepts_dropped_files_and_folders(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtCore import QMimeData, QPointF, QUrl
+    from PySide6.QtGui import QDropEvent
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "input.txt"
+    source.write_text("Salom", encoding="utf-8")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(source)), QUrl.fromLocalFile(str(folder))])
+    event = QDropEvent(
+        QPointF(), Qt.DropAction.CopyAction, data, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    window.batch_table.dropEvent(event)
+    assert window.paths == [source, folder]
+    assert event.isAccepted()
+    window.close()
+    app.processEvents()
+
+
+def test_batch_table_rejects_drop_while_job_is_running(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtCore import QMimeData, QPointF, QUrl
+    from PySide6.QtGui import QDropEvent
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "input.txt"
+    source.write_text("Salom", encoding="utf-8")
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(source))])
+    event = QDropEvent(
+        QPointF(), Qt.DropAction.CopyAction, data, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    window.set_running(True)
+    assert not window.batch_table.isEnabled()
+    window.batch_table.dropEvent(event)
+    assert window.paths == []
+    assert not event.isAccepted()
+    window.set_running(False)
+    window.close()
+    app.processEvents()
+
+
+def test_batch_areas_are_labelled_and_hidden_on_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    assert "drop" in window.input_label.text().lower()
+    assert "batch" in window.batch_label.text().lower()
+    assert window.batch_table.isVisible()
+    window.navigation.setCurrentRow(5)
+    app.processEvents()
+    assert not window.file_list.isVisible()
+    assert not window.batch_table.isVisible()
+    assert not window.input_label.isVisible()
+    assert not window.batch_label.isVisible()
+    assert not window.retry_button.isVisible()
+    window.close()
+
+
+def test_transcription_charge_notice_is_visible_on_initial_screen(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    assert window.formats.isVisible()
+    assert "charges" in window.formats.text().lower()
+    initial_notice = window.formats.text()
+    window.navigation.setCurrentRow(1)
+    window.navigation.setCurrentRow(0)
+    assert window.formats.text() == initial_notice
+    window.close()
+
+
+def test_multiple_inputs_can_be_selected_and_removed_with_keyboard(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    paths = [tmp_path / f"{number}.txt" for number in range(3)]
+    for path in paths:
+        path.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    window.add_paths(paths)
+    window.show()
+    window.file_list.setFocus()
+    window.file_list.setCurrentRow(0)
+    QTest.keyClick(window.file_list, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+    app.processEvents()
+    assert len(window.file_list.selectedItems()) == 2
+    window.remove_selected()
+    assert window.paths == [paths[2]]
+    assert window.file_list.count() == 1
+    window.close()
+
+
+@pytest.mark.parametrize("fail_fast", [False, True])
+def test_gui_and_cli_batch_error_continuation_match(tmp_path: Path, monkeypatch, capsys, fail_fast: bool) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    bad = sources / "a.json"
+    bad.write_text("broken", encoding="utf-8")
+    good = transcript(sources / "b.json")
+    before = {path: path.read_bytes() for path in sources.iterdir()}
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    args = ["export", str(sources), "-o", str(cli_dir)]
+    if fail_fast:
+        args.append("--fail-fast")
+    assert main(args) != 0
+    capsys.readouterr()
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.output_directory.setText(str(gui_dir))
+    window.fail_fast.setChecked(fail_fast)
+    window.add_paths([sources])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.batch_table.item(0, 2).text() == "failed"
+    assert (gui_dir / "b.srt").exists() == (cli_dir / "b.srt").exists() == (not fail_fast)
+    if not fail_fast:
+        assert (gui_dir / "b.srt").read_bytes() == (cli_dir / "b.srt").read_bytes()
+    assert {path: path.read_bytes() for path in sources.iterdir()} == before
+    assert good.exists()
+    window.close()
+
+
+def test_window_retries_cancelled_combined_export(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    sources = [transcript(tmp_path / "first.json"), transcript(tmp_path / "second.json")]
+    original_execute = Worker.execute_file
+
+    def stop_after_first(worker, item):
+        worker.status.connect(
+            lambda text: worker.requestInterruption() if text.startswith("Combined text: processed") else None,
+            Qt.ConnectionType.DirectConnection,
+        )
+        return original_execute(worker, item)
+
+    monkeypatch.setattr(Worker, "execute_file", stop_after_first)
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.export_formats[ArtifactFormat.SRT].setChecked(False)
+    window.export_formats[ArtifactFormat.COMBINED_TXT].setChecked(True)
+    window.add_paths(sources)
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert not (tmp_path / "combined.txt").exists()
+    assert window.retry_button.isEnabled()
+    assert all(window.batch_table.item(row, 2).text() == "cancelled" for row in range(window.batch_table.rowCount()))
+    monkeypatch.setattr(Worker, "execute_file", original_execute)
+    window.retry_button.click()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    output = (tmp_path / "combined.txt").read_text(encoding="utf-8")
+    assert "first.json" in output and "second.json" in output
+    assert not window.retry_button.isEnabled()
+    window.close()
+
+
+def test_retry_preserves_successful_outputs_after_partial_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = transcript(tmp_path / "input.json")
+    original_execute = Worker.execute_file
+
+    def partial_failure(worker, item):
+        (tmp_path / "input.srt").write_text("already written", encoding="utf-8")
+        raise OSError("simulated second-output failure")
+
+    monkeypatch.setattr(Worker, "execute_file", partial_failure)
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.export_formats[ArtifactFormat.TXT].setChecked(True)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    monkeypatch.setattr(Worker, "execute_file", original_execute)
+    window.retry_button.click()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "input.srt").read_text(encoding="utf-8") == "already written"
+    assert "Salom" in (tmp_path / "input.txt").read_text(encoding="utf-8")
+    assert window.batch_table.item(0, 2).text() == "partial"
+    window.close()
+
+
+@pytest.mark.parametrize("stop_reason", ["failure", "cancel"])
+def test_retry_includes_files_not_run_in_original_batch(tmp_path: Path, monkeypatch, stop_reason: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    sources = [tmp_path / "first.txt", tmp_path / "second.txt"]
+    for source in sources:
+        source.write_text("Salom", encoding="utf-8")
+    original_execute = Worker.execute_file
+
+    def execute_first(worker, item):
+        if stop_reason == "failure":
+            raise OSError("simulated failure")
+        result = original_execute(worker, item)
+        worker.requestInterruption()
+        return result
+
+    monkeypatch.setattr(Worker, "execute_file", execute_first)
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.fail_fast.setChecked(stop_reason == "failure")
+    window.add_paths(sources)
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.batch_table.item(1, 2).text().startswith("Not run")
+    assert window.retry_button.isEnabled()
+    monkeypatch.setattr(Worker, "execute_file", original_execute)
+    window.retry_button.click()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert all((tmp_path / f"{source.stem} CYR.txt").is_file() for source in sources)
+    assert not window.retry_button.isEnabled()
+    assert window.batch_table.rowCount() == 2
+    assert {window.batch_table.item(row, 0).text() for row in range(2)} == {str(source) for source in sources}
+    assert all(window.batch_table.item(row, 2).text() == "written" for row in range(2))
+    report = tmp_path / "batch-report.json"
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getSaveFileName", lambda *args: (str(report), ""))
+    window.save_batch_report()
+    assert {row["input"] for row in json.loads(report.read_text(encoding="utf-8"))["files"]} == {
+        str(source) for source in sources
+    }
+    window.close()
+
+
+def test_format_controls_explain_outputs_and_provider_requests(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    resolve = window.export_formats[ArtifactFormat.RESOLVE_EDL]
+    assert "Resolve" in resolve.text()
+    assert "marker" in resolve.toolTip().lower()
+    mini = window.export_formats[ArtifactFormat.SRT_MINI]
+    assert "subtitle" in mini.toolTip().lower()
+    provider = window.transcription_options.remote_formats["pdf"]
+    assert "ElevenLabs" in provider.toolTip()
+    assert "request" in provider.toolTip().lower()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("output_appears", [True, False])
+def test_transcription_rechecks_outputs_after_planning_without_unexpected_provider_calls(
+    tmp_path: Path, monkeypatch, output_appears: bool
+) -> None:
+    from elevenlabs_toolkit.application.desktop import prepare_files
+
+    source = tmp_path / "audio.flac"
+    source.write_bytes(b"audio")
+    target = tmp_path / "audio.flac.transcript.json"
+    if not output_appears:
+        target.write_text("existing", encoding="utf-8")
+    settings = DesktopSettings(project_directory=tmp_path)
+    prepared = prepare_files("Transcribe", (source,), ScriptMode.SOURCE, ConflictPolicy.SKIP, (), settings)
+    assert prepared[0].plan.api_requests == (1 if output_appears else 0)
+    if output_appears:
+        target.write_text("existing", encoding="utf-8")
+    else:
+        target.unlink()
+
+    def unexpected_provider(*args, **kwargs):
+        raise AssertionError("Provider should not be constructed")
+
+    monkeypatch.setattr("elevenlabs_toolkit.providers.ElevenLabsProvider", unexpected_provider)
+    worker = Worker("Transcribe", ScriptMode.SOURCE, [], False, settings=settings, retry_plan=prepared)
+    results = []
+    worker.file_result.connect(results.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    if output_appears:
+        assert results[0]["status"] == "skipped"
+        assert target.read_text(encoding="utf-8") == "existing"
+    else:
+        assert results[0]["status"] == "failed"
+        assert "plan" in results[0]["error"].lower()
+        assert not target.exists()
+    assert source.read_bytes() == b"audio"
+
+
+@pytest.mark.parametrize("fail_fast", [False, True])
+def test_transcription_failure_continuation_matches_cli_without_paid_calls(
+    tmp_path: Path, monkeypatch, capsys, fail_fast: bool
+) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+    from elevenlabs_toolkit.providers import ProviderError
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    class Provider:
+        def __init__(self, *, env_file: Path) -> None:
+            pass
+
+        def transcribe(self, path, options):
+            calls.append(path.name)
+            if path.name == "a.wav":
+                raise ProviderError("simulated provider failure")
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", Provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", Provider)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    for name in ("a.wav", "b.wav"):
+        (inputs / name).write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    args = ["transcribe", str(inputs), "-o", str(cli_dir)]
+    if fail_fast:
+        args.append("--fail-fast")
+    assert main(args) != 0
+    capsys.readouterr()
+    cli_calls = list(calls)
+    calls.clear()
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.output_directory.setText(str(gui_dir))
+    window.fail_fast.setChecked(fail_fast)
+    window.add_paths([inputs])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert calls == cli_calls == (["a.wav"] if fail_fast else ["a.wav", "b.wav"])
+    assert (gui_dir / "b.wav.transcript.json").exists() == (cli_dir / "b.json").exists() == (not fail_fast)
+    assert window.batch_table.item(0, 2).text() == "failed"
+    if fail_fast:
+        assert "Not run" in window.batch_table.item(1, 2).text()
+        assert window.retry_button.isEnabled()
+    assert all((inputs / name).read_bytes() == b"audio" for name in ("a.wav", "b.wav"))
+    window.close()
+
+
+def test_stop_during_request_delay_keeps_remaining_transcription_retryable(tmp_path: Path, monkeypatch) -> None:
+    from elevenlabs_toolkit import providers
+
+    calls = []
+
+    class Provider:
+        def __init__(self, *, env_file: Path) -> None:
+            pass
+
+        def transcribe(self, path, options):
+            calls.append(path.name)
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", Provider)
+    sources = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    for source in sources:
+        source.write_bytes(b"audio")
+    worker = Worker(
+        "Transcribe",
+        ScriptMode.SOURCE,
+        sources,
+        False,
+        settings=DesktopSettings(project_directory=tmp_path, request_delay=30),
+    )
+    retry_items = []
+    worker.failed_item.connect(retry_items.append, Qt.ConnectionType.DirectConnection)
+    worker.status.connect(
+        lambda message: worker.requestInterruption() if message.startswith("Waiting ") else None,
+        Qt.ConnectionType.DirectConnection,
+    )
+    worker.start()
+    assert worker.wait(5000)
+    assert calls == ["a.wav"]
+    assert [item.plan.sources[0] for item in retry_items] == [sources[1]]
+    assert (tmp_path / "a.wav.transcript.json").is_file()
+    assert not (tmp_path / "b.wav.transcript.json").exists()
+    assert all(source.read_bytes() == b"audio" for source in sources)
+
+
+def test_transcription_retry_settings_match_cli_without_paid_calls(tmp_path: Path, monkeypatch) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+    from elevenlabs_toolkit.providers import ProviderTransientError
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    attempts = []
+
+    class Provider:
+        def __init__(self, *, env_file: Path) -> None:
+            self.attempts = 0
+
+        def transcribe(self, path, options):
+            self.attempts += 1
+            attempts.append((path, self.attempts))
+            if self.attempts == 1:
+                raise ProviderTransientError("temporary", retry_after_seconds=0)
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", Provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", Provider)
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    assert main(["transcribe", str(source), "-o", str(cli_dir), "--retries", "1", "--retry-backoff", "0"]) == 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.transcription_options.retries.setText("1")
+    window.transcription_options.backoff.setText("0")
+    window.output_directory.setText(str(gui_dir))
+    window.add_paths([source])
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "up to 2 attempts" in window.details.toPlainText()
+    assert len(attempts) == 2
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert attempts == [(source, 1), (source, 2), (source, 1), (source, 2)]
+    assert (gui_dir / "audio.wav.transcript.json").read_bytes() == (cli_dir / "audio.json").read_bytes()
+    window.close()
+
+
+def test_transcription_partial_outputs_match_cli_and_preserve_existing_json(tmp_path: Path, monkeypatch) -> None:
+    import base64
+
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    calls = []
+
+    class Provider:
+        def __init__(self, *, env_file: Path) -> None:
+            pass
+
+        def transcribe(self, path, options):
+            calls.append(options.remote_formats)
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+                "additional_formats": [
+                    {"requested_format": "pdf", "is_base64_encoded": True, "content": base64.b64encode(b"pdf").decode()}
+                ],
+            }
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", Provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", Provider)
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    cli_dir.mkdir()
+    gui_dir.mkdir()
+    (cli_dir / "audio.json").write_text("keep", encoding="utf-8")
+    (gui_dir / "audio.wav.transcript.json").write_text("keep", encoding="utf-8")
+    assert main(["transcribe", str(source), "-o", str(cli_dir), "--on-conflict", "skip", "--remote-format", "pdf"]) == 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.output_directory.setText(str(gui_dir))
+    window.transcription_options.remote_formats["pdf"].setChecked(True)
+    window.add_paths([source])
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "Planned API requests: 1" in window.details.toPlainText()
+    assert calls == [("pdf",)]
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert calls == [("pdf",), ("pdf",)]
+    assert (gui_dir / "audio.wav.transcript.json").read_text() == "keep"
+    assert (cli_dir / "audio.json").read_text() == "keep"
+    assert (gui_dir / "audio.wav.transcript.pdf").read_bytes() == (cli_dir / "audio.pdf").read_bytes() == b"pdf"
+    assert window.batch_table.item(0, 2).text() == "partial"
+    window.close()
+
+
+def test_workflows_fit_a_900_pixel_window(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    for row in range(6):
+        window.navigation.setCurrentRow(row)
+        window.resize(900, 700)
+        app.processEvents()
+        assert window.width() <= 900, f"workflow {row} forces width {window.width()}"
+        assert window.start.isVisible()
+    window.close()
+
+
+def test_small_window_scrolls_to_processing_controls(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(900, 600)
+    window.show()
+    app.processEvents()
+    assert window.height() <= 600
+    assert window.main_scroll.verticalScrollBar().maximum() > 0
+    window.main_scroll.ensureWidgetVisible(window.start)
+    app.processEvents()
+    position = window.start.mapTo(window.main_scroll.viewport(), window.start.rect().center())
+    assert window.main_scroll.viewport().rect().contains(position)
+    window.close()
+
+
+def test_keyboard_can_select_workflow_and_change_options(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    window.navigation.setFocus()
+    QTest.keyClick(window.navigation, Qt.Key.Key_Down)
+    app.processEvents()
+    assert window.active_workflow == 1
+    window.mode.setFocus()
+    QTest.keyClick(window.mode, Qt.Key.Key_Down)
+    assert window.mode.currentText() == "Latin"
+    window.output_subfolder.setFocus()
+    QTest.keyClick(window.output_subfolder, Qt.Key.Key_Space)
+    assert window.output_subfolder.isChecked()
+    window.close()
+
+
+@pytest.mark.parametrize("pattern", ["", "["])
+def test_failed_preflight_preserves_previous_retryable_batch(tmp_path: Path, monkeypatch, pattern: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "bad.txt"
+    source.write_bytes(b"\xff")
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    window.filter_kind.setCurrentIndex(2)
+    window.pattern.setText(pattern)
+    old_worker = window.worker
+    window.start_job()
+    if pattern:
+        assert window.worker is not old_worker
+        assert window.worker.wait(5000)
+        app.processEvents()
+    assert "Preflight failed" in window.details.toPlainText()
+    assert window.batch_table.rowCount() == 1
+    assert window.batch_table.item(0, 2).text() == "failed"
+    assert window.retry_button.isEnabled()
+    source.write_text("Salom", encoding="utf-8")
+    window.retry_failed()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "bad CYR.txt").read_text(encoding="utf-8") == "Салом"
+    window.close()
+
+
+def test_project_context_is_restored_with_its_profiles(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "elevenlabs-toolkit.toml").write_text(
+        "[profiles.custom.segmentation]\nmax_lines = 4\n", encoding="utf-8"
+    )
+    window = MainWindow(settings=settings)
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getExistingDirectory", lambda *args: str(project))
+    window.select_project()
+    window.export_text.profile.setCurrentText("custom")
+    window.save_preset("Custom project")
+    window.close()
+    restored = MainWindow(settings=settings)
+    assert restored.project_directory == project
+    assert restored.export_text.profile.currentText() == "custom"
+    assert restored.export_text.settings(project).configuration()["segmentation"]["max_lines"] == 4
+    restored.reset_preferences()
+    restored.load_preset("Custom project")
+    assert restored.project_directory == project
+    assert restored.export_text.settings(project).configuration()["segmentation"]["max_lines"] == 4
+    restored.close()
+    app.processEvents()
+
+
+def test_gui_remote_formats_match_cli_with_fake_provider(tmp_path: Path, monkeypatch) -> None:
+    import base64
+
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    formats = ("pdf", "docx", "html", "segmented-json")
+
+    class Provider:
+        def __init__(self, *, env_file: Path) -> None:
+            self.env_file = env_file
+
+        def transcribe(self, path, options):
+            calls.append(options.remote_formats)
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+                "additional_formats": [
+                    {
+                        "requested_format": "pdf",
+                        "content": base64.b64encode(b"pdf content").decode(),
+                        "is_base64_encoded": True,
+                    },
+                    {
+                        "requested_format": "docx",
+                        "content": base64.b64encode(b"docx content").decode(),
+                        "is_base64_encoded": True,
+                    },
+                    {"requested_format": "html", "content": "<p>Salom</p>"},
+                    {"requested_format": "segmented_json", "content": '{"segments": []}'},
+                ],
+            }
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", Provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", Provider)
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    args = ["transcribe", str(source), "-o", str(cli_dir)]
+    for value in formats:
+        args.extend(["--remote-format", value])
+    assert main(args) == 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.output_directory.setText(str(gui_dir))
+    for value in formats:
+        window.transcription_options.remote_formats[value].setChecked(True)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    expected_formats = ("pdf", "docx", "html", "segmented_json")
+    assert calls == [expected_formats, expected_formats]
+    for suffix in ("json", "pdf", "docx", "html", "segmented.json"):
+        assert (gui_dir / f"audio.wav.transcript.{suffix}").read_bytes() == (cli_dir / f"audio.{suffix}").read_bytes()
+    window.close()
+
+
+def test_recent_input_and_output_folders_are_remembered(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    input_dir, output_dir = tmp_path / "input", tmp_path / "output"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    source = input_dir / "sample.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window = MainWindow(settings=settings)
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getOpenFileNames", lambda *args: ([str(source)], ""))
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getExistingDirectory", lambda *args: str(output_dir))
+    window.select_files()
+    window.select_output_directory()
+    window.close()
+    restored = MainWindow(settings=settings)
+    starts = []
+    monkeypatch.setattr(
+        "elevenlabs_toolkit.gui.QFileDialog.getOpenFileNames", lambda *args: (starts.append(args[2]) or [], "")
+    )
+    restored.select_files()
+    assert starts == [str(input_dir)]
+    restored.output_directory.clear()
+    monkeypatch.setattr(
+        "elevenlabs_toolkit.gui.QFileDialog.getExistingDirectory", lambda *args: starts.append(args[2]) or ""
+    )
+    restored.select_output_directory()
+    assert starts[-1] == str(output_dir)
+    restored.close()
+    app.processEvents()
+
+
+def test_show_effective_workflow_settings_identifies_overrides(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "elevenlabs-toolkit.toml").write_text('[text]\nscript = "cyrillic"\n', encoding="utf-8")
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.export_text.script.setCurrentText("Latin")
+    window.export_text.numeric_fields["max_lines"][0].setText("3")
+    window.show_workflow_configuration()
+    report = json.loads(window.details.toPlainText())
+    assert report["effective"]["text"]["script"] == "latin"
+    assert report["effective"]["segmentation"]["max_lines"] == 3
+    assert report["gui_overrides"]["text.script"] == "latin"
+    assert report["gui_overrides"]["segmentation.max_lines"] == 3
+    assert "segmentation.max_duration" not in report["gui_overrides"]
+    assert "env_file" not in window.details.toPlainText()
+    window.close()
+    app.processEvents()
+
+
+def test_effective_settings_identify_profile_and_override_sources(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    user_config = tmp_path / "user.toml"
+    user_config.write_text(
+        "[text]\nscript = 'latin'\n[profiles.custom.segmentation]\nmax_words = 5\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("elevenlabs_toolkit.config.user_config_path", lambda: user_config)
+    (tmp_path / "elevenlabs-toolkit.toml").write_text(
+        "[segmentation]\nsrt_fps = 25\n[profiles.custom.segmentation]\nmax_lines = 4\nmax_duration = 4.0\n",
+        encoding="utf-8",
+    )
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.refresh_profiles()
+    window.navigation.setCurrentRow(2)
+    window.export_text.profile.setCurrentText("custom")
+    window.export_text.numeric_fields["max_lines"][0].setText("3")
+    window.show_workflow_configuration()
+    report = json.loads(window.details.toPlainText())
+    assert report["profile_settings"]["segmentation"]["max_lines"] == 4
+    assert report["profile_settings"]["segmentation"]["max_words"] == 5
+    assert report["effective"]["segmentation"]["max_lines"] == 3
+    assert report["setting_sources"]["segmentation.max_lines"] == "workflow override"
+    assert report["setting_sources"]["segmentation.max_duration"] == "profile: custom"
+    assert report["setting_sources"]["segmentation.max_words"] == "profile: custom"
+    assert report["setting_sources"]["segmentation.srt_fps"] == "project configuration"
+    assert report["setting_sources"]["text.script"] == "user configuration"
+    assert report["setting_sources"]["text.cleanup"] == "built-in default"
+    window.close()
+    app.processEvents()
+
+
+def test_gui_script_selector_exports_cyrillic_text(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = transcript(tmp_path / "input.json")
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.export_text.script.setCurrentText("Cyrillic")
+    window.export_formats[ArtifactFormat.SRT].setChecked(False)
+    window.export_formats[ArtifactFormat.TXT].setChecked(True)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "Салом" in (tmp_path / "input.txt").read_text(encoding="utf-8")
+    window.close()
+
+
+def test_fail_fast_marks_unprocessed_batch_rows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    bad, good = tmp_path / "a.txt", tmp_path / "b.txt"
+    bad.write_bytes(b"\xff")
+    good.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    window.fail_fast.setChecked(True)
+    window.add_paths([bad, good])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.batch_table.item(0, 2).text() == "failed"
+    assert "Not run" in window.batch_table.item(1, 2).text()
+    assert not (tmp_path / "b CYR.txt").exists()
+    window.close()
+
+
+@pytest.mark.parametrize("name", ["max_lines", "max_duration", "srt_fps", "gap_seconds", "marker_fps"])
+def test_subtitle_numeric_fields_reject_zero_inline(tmp_path: Path, monkeypatch, name: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    panel = window.export_text
+    panel.numeric_inputs[name].setText("0")
+    assert "greater than 0" in panel.numeric_errors[name].text()
+    with pytest.raises(ValueError):
+        panel.settings(tmp_path)
+    assert panel.advanced_section is not None and panel.advanced_section.toggle.isChecked()
+    panel.numeric_inputs[name].setText("1")
+    assert not panel.numeric_errors[name].text()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("name", ["min_duration", "srt_padding_frames", "srt_gap_milliseconds"])
+def test_subtitle_numeric_fields_allow_zero(tmp_path: Path, monkeypatch, name: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    field = window.export_text.numeric_inputs[name]
+    field.setText("0")
+    assert not window.export_text.numeric_errors[name].text()
+    window.close()
+    app.processEvents()
+
+
+def test_transcription_gui_matches_cli_provider_options_and_outputs(tmp_path: Path, monkeypatch) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    calls = []
+
+    class Provider:
+        def __init__(self, *, env_file: Path) -> None:
+            self.env_file = env_file
+
+        def transcribe(self, path, options):
+            calls.append((path, options, self.env_file))
+            return {
+                "text": "Salom",
+                "language_code": "uz",
+                "words": [
+                    {
+                        "type": "word",
+                        "text": "Salom",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", Provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", Provider)
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    assert (
+        main(
+            [
+                "transcribe",
+                str(source),
+                "-o",
+                str(cli_dir),
+                "--format",
+                "srt",
+                "--language-code",
+                "uz",
+                "--num-speakers",
+                "2",
+                "--keyterm",
+                "Salom",
+                "--temperature",
+                "0.5",
+                "--seed",
+                "42",
+                "--no-audio-events",
+                "--env-file",
+                str(tmp_path / ".env"),
+            ]
+        )
+        == 0
+    )
+    window = MainWindow()
+    window.project_directory = tmp_path
+    options = window.transcription_options
+    options.language.setText("uz")
+    options.num_speakers.setText("2")
+    options.keyterms.setPlainText("Salom")
+    options.temperature.setText("0.5")
+    options.seed.setText("42")
+    options.audio_events.setChecked(False)
+    options.local_formats[ArtifactFormat.SRT].setChecked(True)
+    window.output_directory.setText(str(gui_dir))
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert (gui_dir / "input.wav.transcript.json").read_bytes() == (cli_dir / "input.json").read_bytes()
+    assert (gui_dir / "input.wav.transcript.srt").read_bytes() == (cli_dir / "input.srt").read_bytes()
+    window.close()
+
+
+def test_cli_and_gui_reject_timed_output_without_timestamps(tmp_path: Path, monkeypatch, capsys) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid settings must not construct a provider")
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", forbidden)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", forbidden)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"audio")
+    assert main(["transcribe", str(source), "--timestamps", "none", "--format", "srt"]) != 0
+    assert "timestamps" in capsys.readouterr().err
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.transcription_options.timestamps.setCurrentText("None")
+    window.transcription_options.local_formats[ArtifactFormat.SRT].setChecked(True)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "timestamps" in window.details.toPlainText().lower()
+    assert list(tmp_path.iterdir()) == [source]
+    window.close()
+
+
+def test_transcription_skip_existing_matches_cli_without_provider(tmp_path: Path, monkeypatch) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Skipped transcription must not initialize a provider")
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", forbidden)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", forbidden)
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"audio")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    cli_dir.mkdir()
+    gui_dir.mkdir()
+    cli_target = cli_dir / "input.json"
+    gui_target = gui_dir / "input.wav.transcript.json"
+    cli_target.write_text("keep", encoding="utf-8")
+    gui_target.write_text("keep", encoding="utf-8")
+    assert main(["transcribe", str(source), "--on-conflict", "skip", "-o", str(cli_dir)]) == 0
+    worker = Worker(
+        "Transcribe",
+        ScriptMode.SOURCE,
+        [source],
+        False,
+        settings=DesktopSettings(project_directory=tmp_path, output_directory=gui_dir),
+        policy=ConflictPolicy.SKIP,
+    )
+    reports = []
+    worker.finished_result.connect(reports.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert "failed" not in reports[0].lower()
+    assert cli_target.read_text() == gui_target.read_text() == "keep"
+
+
+def test_advanced_section_collapses_without_disabling_settings(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.navigation.setCurrentRow(2)
+    section = window.export_text.advanced_section
+    section.toggle.setChecked(True)
+    field = window.export_text.numeric_fields["max_lines"][0]
+    field.setText("3")
+    section.toggle.setChecked(False)
+    assert field.isEnabled()
+    assert ("max_lines", 3) in window.export_text.settings(tmp_path).segmentation
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("source", ["project", "selected", "environment"])
+def test_transcription_credential_precedence_without_network(tmp_path: Path, monkeypatch, source: str) -> None:
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("ELEVENLABS_API_KEY=project-test-key\n", encoding="utf-8")
+    selected = tmp_path / "selected.env"
+    selected.write_text("ELEVENLABS_API_KEY=selected-test-key\n", encoding="utf-8")
+    if source == "environment":
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "environment-test-key")
+    received_keys = []
+
+    class Client:
+        def __init__(self, *, api_key):
+            received_keys.append(api_key)
+            self.speech_to_text = SimpleNamespace(convert=self.convert)
+
+        def convert(self, **kwargs):
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+
+    client_module = ModuleType("elevenlabs.client")
+    client_module.ElevenLabs = Client
+    monkeypatch.setitem(sys.modules, "elevenlabs.client", client_module)
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.project_directory = project
+    if source != "project":
+        window.transcription_options.env_file.setText(str(selected))
+    window.add_paths([audio])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert received_keys == [f"{source}-test-key"]
+    assert (tmp_path / "audio.wav.transcript.json").is_file()
+    assert all(key not in window.details.toPlainText() for key in received_keys)
+    window.close()
+    assert all(key not in (tmp_path / "settings.ini").read_text() for key in received_keys)
+
+
+def test_missing_credentials_can_be_fixed_and_retried_without_network(tmp_path: Path, monkeypatch) -> None:
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    received = []
+
+    class Client:
+        def __init__(self, *, api_key):
+            received.append(api_key)
+            self.speech_to_text = SimpleNamespace(convert=self.convert)
+
+        def convert(self, **kwargs):
+            return {
+                "text": "Salom",
+                "words": [
+                    {
+                        "text": "Salom",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "S", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+
+    client_module = ModuleType("elevenlabs.client")
+    client_module.ElevenLabs = Client
+    monkeypatch.setitem(sys.modules, "elevenlabs.client", client_module)
+    reviews = []
+
+    def approve(window, preview):
+        reviews.append(preview)
+        window.worker.answer_review(True)
+
+    monkeypatch.setattr(MainWindow, "review_plan", approve)
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"audio")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    assert ".env" in window.batch_table.item(0, 3).text()
+    assert not received
+    (tmp_path / ".env").write_text("ELEVENLABS_API_KEY=test-key\n", encoding="utf-8")
+    window.retry_failed()
+    for _ in range(100):
+        app.processEvents()
+        if window.worker.isFinished():
+            break
+        QTest.qWait(20)
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert len(reviews) == 1
+    assert received == ["test-key"]
+    assert (tmp_path / "audio.wav.transcript.json").is_file()
+    assert not window.retry_button.isEnabled()
+    window.close()
+
+
+def test_credentials_file_can_be_selected_without_saving_it(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    selected = tmp_path / ".env"
+    selected.write_text("ELEVENLABS_API_KEY=secret-value\n", encoding="utf-8")
+    monkeypatch.setattr("elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(selected), ""))
+    window.transcription_options.choose_credentials.click()
+    assert window.transcription_options.settings(tmp_path).env_file == selected
+    window.close()
+    saved = (tmp_path / "settings.ini").read_text(encoding="utf-8")
+    assert "secret-value" not in saved
+    assert str(selected) not in saved
+    app.processEvents()
+
+
+def test_credentials_help_is_available_from_help_menu(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    shown = []
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QMessageBox.information", lambda *args: shown.append(args))
+    help_menu = next(action.menu() for action in window.menuBar().actions() if action.text() == "Help")
+    action = next(action for action in help_menu.actions() if action.text() == "Credentials and API Costs")
+    action.trigger()
+    guidance = shown[0][2]
+    for phrase in ("ELEVENLABS_API_KEY", ".env", "Credentials file", "environment", "charges", "not saved"):
+        assert phrase.lower() in guidance.lower()
+    window.close()
+    app.processEvents()
+
+
+def test_transcription_options_explain_provider_settings(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    panel = window.transcription_options
+    assert "charges" in panel.retries.toolTip().lower()
+    assert "files" in panel.delay.toolTip().lower()
+    assert "speaker" in panel.diarize.toolTip().lower()
+    assert "timestamps" in panel.timestamps.toolTip().lower()
+    assert "scribe_v2" in panel.no_verbatim.toolTip()
+    window.close()
+    app.processEvents()
+
+
+def test_invalid_speaker_count_has_inline_error_and_blocks_preflight(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.transcription_options.num_speakers.setText("33")
+    app.processEvents()
+    assert "between 1 and 32" in window.transcription_options.numeric_errors["num_speakers"].text()
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"audio")
+    window.add_paths([source])
+    window.start_job()
+    assert "Speaker count" in window.details.toPlainText()
+    assert window.start.isEnabled()
+    window.transcription_options.num_speakers.setText("2")
+    assert not window.transcription_options.numeric_errors["num_speakers"].text()
+    window.close()
+
+
+@pytest.mark.parametrize("invalid", ["model", "keyterms", "no_verbatim"])
+def test_invalid_transcription_text_options_have_inline_errors(monkeypatch, invalid: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    panel = window.transcription_options
+    if invalid == "model":
+        panel.model.clear()
+        error = panel.model_error
+    elif invalid == "keyterms":
+        panel.keyterms.setPlainText("valid\ninvalid[term]")
+        error = panel.keyterms_error
+    else:
+        panel.model.setText("scribe_v1")
+        panel.no_verbatim.setChecked(True)
+        error = panel.verbatim_error
+    assert error.text()
+    window.start_job()
+    assert "preflight failed" in window.details.toPlainText().lower()
+    assert window.start.isEnabled()
+    panel.model.setText("scribe_v2")
+    panel.keyterms.setPlainText("valid")
+    assert not error.text()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("workflow", [0, 2, 3])
+def test_invalid_replacement_is_reported_inline_before_start(tmp_path: Path, monkeypatch, workflow: int) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.navigation.setCurrentRow(workflow)
+    panel = (window.transcription_options, window.export_text, window.clean_text)[{0: 0, 2: 1, 3: 2}[workflow]]
+    panel.override_replacements.setChecked(True)
+    panel.replacements.setPlainText("valid=VALID\nnot-a-replacement")
+    assert "line 2" in panel.replacement_error.text().lower()
+    window.start_job()
+    assert "replacement" in window.details.toPlainText().lower()
+    assert window.start.isEnabled()
+    panel.replacements.setPlainText("valid=VALID\nname=Name")
+    assert panel.replacement_error.text() == ""
+    panel.replacements.setPlainText("invalid")
+    panel.override_replacements.setChecked(False)
+    assert panel.replacement_error.text() == ""
+    assert panel.settings(tmp_path).replacements is None
+    window.close()
+    app.processEvents()
+
+
+def test_batch_table_distinguishes_individual_and_combined_export_results(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    good = transcript(tmp_path / "good.json")
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    window.navigation.setCurrentRow(2)
+    window.export_formats[ArtifactFormat.SRT].setChecked(False)
+    window.export_formats[ArtifactFormat.TXT].setChecked(True)
+    window.export_formats[ArtifactFormat.COMBINED_TXT].setChecked(True)
+    window.add_paths([good, bad])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    rows = [
+        tuple(window.batch_table.item(i, col).text() for col in range(3)) for i in range(window.batch_table.rowCount())
+    ]
+    assert any(
+        source == str(good) and output.endswith("good.txt") and status == "ok" for source, output, status in rows
+    )
+    assert any(
+        source == str(good) and output.endswith("combined.txt") and status == "failed"
+        for source, output, status in rows
+    )
+    window.close()
+
+
+@pytest.mark.parametrize("preview_before_switch", [False, True])
+def test_switching_workflows_preserves_failed_batch_for_retry(
+    tmp_path: Path, monkeypatch, preview_before_switch: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "bad.txt"
+    source.write_bytes(b"\xff")
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    if preview_before_switch:
+        window.show_preview()
+        assert window.worker.wait(5000)
+        app.processEvents()
+    window.navigation.setCurrentRow(4)
+    assert not window.retry_button.isEnabled()
+    window.navigation.setCurrentRow(1)
+    assert window.retry_button.isEnabled()
+    assert window.batch_table.item(0, 2).text() == ("Pending" if preview_before_switch else "failed")
+    source.write_text("Salom", encoding="utf-8")
+    window.retry_failed()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "bad CYR.txt").is_file()
+    window.close()
+
+
+def test_switching_workflows_restores_its_own_batch_progress(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "input.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.progress.value() == window.progress.maximum() == 1
+    window.navigation.setCurrentRow(4)
+    assert window.progress.value() == 0
+    window.navigation.setCurrentRow(1)
+    assert window.progress.value() == window.progress.maximum() == 1
+    window.close()
+
+
+def test_preview_does_not_discard_retryable_batch(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    good, bad = tmp_path / "good.txt", tmp_path / "bad.txt"
+    good.write_text("Salom", encoding="utf-8")
+    bad.write_bytes(b"\xff")
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.add_paths([good, bad])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    bad.write_text("Salom", encoding="utf-8")
+    window.show_preview()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    assert window.retry_button.text() == "Retry Previous Batch"
+    window.retry_failed()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "bad CYR.txt").is_file()
+    assert window.batch_table.rowCount() == 2
+    assert all(window.batch_table.item(row, 2).text() == "written" for row in range(2))
+    window.close()
+
+
+def test_retry_failed_keeps_original_batch_destinations(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    good, bad = tmp_path / "one" / "good.txt", tmp_path / "two" / "bad.txt"
+    good.parent.mkdir()
+    bad.parent.mkdir()
+    good.write_text("Salom", encoding="utf-8")
+    bad.write_bytes(b"\xff")
+    window.navigation.setCurrentRow(1)
+    window.output_directory.setText(str(tmp_path / "out"))
+    window.add_paths([good, bad])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "out" / "one" / "good CYR.txt").exists()
+    bad.write_text("Salom", encoding="utf-8")
+    window.retry_failed()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "out" / "two" / "bad CYR.txt").read_text(encoding="utf-8") == "Салом"
+    assert not (tmp_path / "out" / "bad CYR.txt").exists()
+    window.close()
+
+
+@pytest.mark.parametrize("mode", ["Quiet", "Standard"])
+def test_retry_respects_progress_reporting_mode(tmp_path: Path, monkeypatch, mode: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "input.txt"
+    source.write_bytes(b"\xff")
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.retry_button.isEnabled()
+    source.write_text("Salom", encoding="utf-8")
+    window.report_mode.setCurrentText(mode)
+    updates = []
+    window.details.textChanged.connect(lambda: updates.append(window.details.toPlainText()))
+    window.retry_failed()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert any("[1/1]" in update for update in updates) == (mode == "Standard")
+    assert "written" in window.details.toPlainText().lower()
+    window.close()
+
+
+def test_retry_does_not_replace_output_created_after_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "bad.txt"
+    source.write_bytes(b"\xff")
+    window.navigation.setCurrentRow(1)
+    window.conflict.setCurrentIndex(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    source.write_text("Salom", encoding="utf-8")
+    output = tmp_path / "bad CYR.txt"
+    output.write_text("keep this", encoding="utf-8")
+    window.retry_failed()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert output.read_text(encoding="utf-8") == "keep this"
+    window.close()
+
+
+def test_export_content_preview_displays_subtitles_without_writes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = transcript(tmp_path / "input.json")
+    window.navigation.setCurrentRow(2)
+    window.add_paths([source])
+    window.preview_content_button.click()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "Salom" in window.details.toPlainText()
+    assert "-->" in window.details.toPlainText()
+    assert not source.with_suffix(".srt").exists()
+    window.close()
+
+
+def test_output_subfolder_option_is_used_for_conversion(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "sample.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    custom = str(tmp_path / "custom")
+    window.output_directory.setText(custom)
+    window.output_subfolder.setChecked(True)
+    assert not window.output_directory.isEnabled()
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "Output" / "sample CYR.txt").read_text(encoding="utf-8") == "Салом"
+    window.output_subfolder.setChecked(False)
+    assert window.output_directory.isEnabled()
+    assert window.output_directory.text() == custom
+    window.close()
+
+
+def test_named_presets_and_reset_do_not_store_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.transcription_options.model.setText("custom-model")
+    window.transcription_options.env_file.setText("secret-file.env")
+    window.output_directory.setText(str(tmp_path / "out"))
+    window.save_preset("My preset")
+    window.transcription_options.model.setText("changed")
+    window.output_directory.clear()
+    window.load_preset("My preset")
+    assert window.transcription_options.model.text() == "custom-model"
+    assert window.output_directory.text() == str(tmp_path / "out")
+    window.reset_preferences()
+    assert window.transcription_options.model.text() == "scribe_v2"
+    assert window.transcription_options.env_file.text() == ""
+    assert window.output_directory.text() == ""
+    window.close()
+    assert "secret-file.env" not in (tmp_path / "settings.ini").read_text()
+    restored = MainWindow(settings=settings)
+    restored.load_preset("My preset")
+    assert restored.transcription_options.model.text() == "custom-model"
+    restored.close()
+    app.processEvents()
+
+
+def test_reset_restores_configuration_profile_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    window.navigation.setCurrentRow(5)
+    window.config_profile.setCurrentText("social")
+    window.reset_preferences()
+    assert window.config_profile.currentText() == "Project default"
+    window.show_configuration()
+    from elevenlabs_toolkit.config import effective_config
+
+    assert json.loads(window.details.toPlainText())["effective"] == effective_config(cwd=window.project_directory)
+    window.close()
+    app.processEvents()
+
+
+def test_advanced_workflow_options_persist_without_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.transcription_options.model.setText("scribe_test")
+    window.transcription_options.env_file.setText("supersecret.env")
+    window.export_text.numeric_fields["max_lines"][0].setText("3")
+    window.mode.setCurrentText("Latin")
+    window.close()
+    assert "supersecret.env" not in (tmp_path / "settings.ini").read_text()
+    restored = MainWindow(settings=settings)
+    assert restored.transcription_options.model.text() == "scribe_test"
+    assert restored.transcription_options.env_file.text() == ""
+    assert restored.export_text.numeric_fields["max_lines"][0].text() == "3"
+    assert restored.mode.currentText() == "Latin"
+    restored.close()
+    app.processEvents()
+
+
+def test_workflow_settings_are_restored_between_sessions(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.output_directory.setText(str(tmp_path / "audio"))
+    window.navigation.setCurrentRow(1)
+    window.filter_kind.setCurrentIndex(1)
+    window.pattern.setText("*.srt")
+    window.output_directory.setText(str(tmp_path / "output"))
+    window.output_subfolder.setChecked(True)
+    window.fail_fast.setChecked(True)
+    window.close()
+    restored = MainWindow(settings=settings)
+    assert restored.output_directory.text() == str(tmp_path / "audio")
+    restored.navigation.setCurrentRow(1)
+    assert restored.filter_kind.currentIndex() == 1
+    assert restored.pattern.text() == "*.srt"
+    assert restored.output_directory.text() == str(tmp_path / "output")
+    assert restored.output_subfolder.isChecked()
+    assert not restored.output_directory.isEnabled()
+    assert restored.fail_fast.isChecked()
+    restored.close()
+    app.processEvents()
+
+
+def test_open_selected_output_folder(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "sample.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    window.batch_table.selectRow(0)
+    opened = []
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QDesktopServices.openUrl", lambda url: opened.append(url) or True)
+    window.open_output_folder()
+    assert Path(opened[0].toLocalFile()) == tmp_path
+    window.close()
+
+
+def test_save_batch_report_contains_results_and_preserves_input(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "sample.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    report = tmp_path / "report.json"
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getSaveFileName", lambda *args: (str(report), ""))
+    window.save_batch_report()
+    rows = json.loads(report.read_text(encoding="utf-8"))["files"]
+    assert rows[0]["input"] == str(source)
+    assert rows[0]["status"] != "Pending"
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getSaveFileName", lambda *args: (str(source), ""))
+    window.save_batch_report()
+    assert source.read_text(encoding="utf-8") == "Salom"
+    window.close()
+
+
+def test_batch_table_displays_plans_and_results(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = tmp_path / "sample.txt"
+    source.write_text("Salom", encoding="utf-8")
+    window.navigation.setCurrentRow(1)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.batch_table.rowCount() == 1
+    assert window.batch_table.item(0, 0).text() == str(source)
+    assert window.batch_table.item(0, 1).text() == str(tmp_path / "sample CYR.txt")
+    assert window.batch_table.item(0, 2).text() != "Pending"
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("filename", "mode", "content", "output_name"),
+    [
+        ("04 T LTN.srt", "cyrillic", "Salom", "04 T CYR.srt"),
+        ("04 T CYR.srt", "latin", "Салом", "04 T LTN.srt"),
+        ("04 T.srt", "cyrillic", "Salom", "04 T CYR.srt"),
+        ("04 T.srt", "latin", "Салом", "04 T LTN.srt"),
+    ],
+)
+def test_gui_and_cli_transliteration_names_and_contents_match(
+    tmp_path: Path, monkeypatch, capsys, filename: str, mode: str, content: str, output_name: str
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    source = tmp_path / filename
+    source.write_text(f"1\n00:00:00,000 --> 00:00:01,000\n{content}\n", encoding="utf-8")
+    original = source.read_bytes()
+    cli_output, gui_output = tmp_path / "cli", tmp_path / "gui"
+    assert main(["transliterate", str(source), "--to", mode, "-o", str(cli_output)]) == 0
+    capsys.readouterr()
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.mode.setCurrentText(mode.title())
+    window.output_directory.setText(str(gui_output))
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (gui_output / output_name).read_bytes() == (cli_output / output_name).read_bytes()
+    assert source.read_bytes() == original
+    window.close()
+
+
+@pytest.mark.parametrize("policy", ["skip", "replace", "rename", "error"])
+def test_transliteration_conflicts_match_cli(tmp_path: Path, monkeypatch, capsys, policy: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    source = tmp_path / "04 T LTN.srt"
+    source.write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    original = source.read_bytes()
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    for folder in (cli_dir, gui_dir):
+        folder.mkdir()
+        (folder / "04 T CYR.srt").write_text("existing", encoding="utf-8")
+    exit_code = main(["transliterate", str(source), "--to", "cyrillic", "--on-conflict", policy, "-o", str(cli_dir)])
+    capsys.readouterr()
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.conflict.setCurrentIndex(window.conflict.findData(policy))
+    window.output_directory.setText(str(gui_dir))
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (exit_code != 0) == ("Preflight failed" in window.details.toPlainText())
+    assert {path.name: path.read_bytes() for path in gui_dir.iterdir()} == {
+        path.name: path.read_bytes() for path in cli_dir.iterdir()
+    }
+    assert source.read_bytes() == original
+    window.close()
+
+
+def test_conversion_skip_existing_matches_cli_when_source_is_invalid(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "bad.srt"
+    source.write_bytes(b"\xff")
+    cli_dir = tmp_path / "cli"
+    gui_dir = tmp_path / "gui"
+    cli_dir.mkdir()
+    gui_dir.mkdir()
+    for folder in (cli_dir, gui_dir):
+        (folder / "bad CYR.srt").write_text("existing", encoding="utf-8")
+    code = main(["transliterate", str(source), "--to", "cyrillic", "--on-conflict", "skip", "-o", str(cli_dir)])
+    capsys.readouterr()
+    assert code != 0
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.navigation.setCurrentRow(1)
+    window.output_directory.setText(str(gui_dir))
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert window.batch_table.item(0, 2).text() == "failed"
+    assert (gui_dir / "bad CYR.srt").read_text(encoding="utf-8") == "existing"
+    assert source.read_bytes() == b"\xff"
+    window.close()
 
 
 def transcript(path: Path) -> Path:
@@ -29,6 +1807,338 @@ def transcript(path: Path) -> Path:
         )
     )
     return path
+
+
+@pytest.mark.parametrize(
+    ("format_name", "suffix"),
+    [("resolve-edl", "resolve.edl"), ("cue-index-srt", "cue-index.srt"), ("clean-json", "clean.json")],
+)
+def test_advanced_export_formats_match_cli(tmp_path: Path, monkeypatch, format_name: str, suffix: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = transcript(tmp_path / "input.json")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    args = ["export", str(source), "--format", format_name, "-o", str(cli_dir)]
+    if format_name == "clean-json":
+        args += ["--clean", "uzbek"]
+    if format_name == "resolve-edl":
+        args += ["--marker-fps", "30", "--marker-color", "ResolveColorRed", "--marker-prefix", "Cue"]
+    assert main(args) == 0
+    settings = DesktopSettings(
+        project_directory=tmp_path,
+        output_directory=gui_dir,
+        cleanup="uzbek" if format_name == "clean-json" else None,
+        marker_fps=30.0 if format_name == "resolve-edl" else 25.0,
+        marker_color="ResolveColorRed" if format_name == "resolve-edl" else "ResolveColorBlue",
+        marker_prefix="Cue" if format_name == "resolve-edl" else "Sentence",
+    )
+    worker = Worker("Export", ScriptMode.SOURCE, [source], False, (ArtifactFormat(format_name),), settings=settings)
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert "failed" not in messages[0].lower()
+    assert (gui_dir / f"input.{suffix}").read_bytes() == (cli_dir / f"input.{suffix}").read_bytes()
+
+
+def test_combined_text_export_matches_cli(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sources = [transcript(tmp_path / "z.json"), transcript(tmp_path / "a.json")]
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    assert (
+        main(
+            [
+                "export",
+                *(str(source) for source in sources),
+                "--format",
+                "combined-txt",
+                "--combined-name",
+                "all.txt",
+                "-o",
+                str(cli_dir),
+            ]
+        )
+        == 0
+    )
+    settings = DesktopSettings(project_directory=tmp_path, output_directory=gui_dir, combined_name="all.txt")
+    worker = Worker("Export", ScriptMode.SOURCE, sources, False, (ArtifactFormat.COMBINED_TXT,), settings=settings)
+    worker.run()
+    assert (gui_dir / "all.txt").read_bytes() == (cli_dir / "all.txt").read_bytes()
+
+
+def test_gui_resolve_controls_match_cli_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    source = transcript(tmp_path / "input.json")
+    cli_dir = tmp_path / "cli"
+    assert (
+        main(
+            [
+                "export",
+                str(source),
+                "--format",
+                "resolve-edl",
+                "--marker-fps",
+                "30",
+                "--marker-color",
+                "ResolveColorRed",
+                "--marker-prefix",
+                "Cue",
+                "-o",
+                str(cli_dir),
+            ]
+        )
+        == 0
+    )
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.export_formats[ArtifactFormat.SRT].setChecked(False)
+    window.export_formats[ArtifactFormat.RESOLVE_EDL].setChecked(True)
+    window.export_text.marker_fps.setText("30")
+    window.export_text.marker_color.setText("ResolveColorRed")
+    window.export_text.marker_prefix.setText("Cue")
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "input.resolve.edl").read_bytes() == (cli_dir / "input.resolve.edl").read_bytes()
+    window.close()
+
+
+def test_gui_advanced_subtitle_controls_match_cli(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    source = transcript(tmp_path / "input.json")
+    cli_dir = tmp_path / "cli"
+    args = [
+        "export",
+        str(source),
+        "-o",
+        str(cli_dir),
+        "--profile",
+        "social",
+        "--no-pause-detection",
+        "--max-chars-per-line",
+        "16",
+        "--max-lines",
+        "3",
+        "--max-duration",
+        "3.5",
+        "--srt-fps",
+        "60",
+        "--srt-padding-frames",
+        "1",
+        "--srt-gap-ms",
+        "20",
+        "--srt-smart-line-breaks",
+    ]
+    assert main(args) == 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    panel = window.export_text
+    panel.profile.setCurrentText("social")
+    panel.boolean_fields["pause_detection"].setCurrentIndex(2)
+    for name, value in {
+        "max_chars_per_line": "16",
+        "max_lines": "3",
+        "max_duration": "3.5",
+        "srt_fps": "60",
+        "srt_padding_frames": "1",
+        "srt_gap_milliseconds": "20",
+    }.items():
+        panel.numeric_fields[name][0].setText(value)
+    panel.smart.setChecked(True)
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "input.srt").read_bytes() == (cli_dir / "input.srt").read_bytes()
+    window.close()
+
+
+def test_gui_clean_script_and_replacements_match_cli(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    source = transcript(tmp_path / "input.json")
+    before = source.read_bytes()
+    cli_dir = tmp_path / "cli"
+    assert main(["clean", str(source), "--script", "cyrillic", "--replace", "Salom=Assalom", "-o", str(cli_dir)]) == 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(3)
+    window.clean_text.script.setCurrentText("Cyrillic")
+    window.clean_text.override_replacements.setChecked(True)
+    window.clean_text.replacements.setPlainText("Salom=Assalom")
+    window.add_paths([source])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert (tmp_path / "input.clean.json").read_bytes() == (cli_dir / "input.clean.json").read_bytes()
+    assert source.read_bytes() == before
+    window.close()
+
+
+@pytest.mark.parametrize("policy", ["skip", "replace", "error", "rename"])
+def test_export_conflict_policy_matches_cli(tmp_path: Path, monkeypatch, policy: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = transcript(tmp_path / "input.json")
+    original = source.read_bytes()
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    for directory in (cli_dir, gui_dir):
+        directory.mkdir()
+        (directory / "input.srt").write_text("existing", encoding="utf-8")
+    exit_code = main(["export", str(source), "--format", "srt", "--on-conflict", policy, "-o", str(cli_dir)])
+    worker = Worker(
+        "Export",
+        ScriptMode.SOURCE,
+        [source],
+        False,
+        settings=DesktopSettings(project_directory=tmp_path, output_directory=gui_dir),
+        policy=ConflictPolicy(policy),
+    )
+    reports = []
+    worker.finished_result.connect(reports.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert (exit_code != 0) == ("failed" in reports[0].lower())
+    assert {p.name: p.read_bytes() for p in gui_dir.iterdir()} == {p.name: p.read_bytes() for p in cli_dir.iterdir()}
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("suffix", ["srt", "txt", "mini.srt"])
+def test_desktop_export_matches_cli_bytes(tmp_path: Path, monkeypatch, suffix: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = transcript(tmp_path / "input.json")
+    format_name = {"srt": "srt", "txt": "txt", "mini.srt": "srt-mini"}[suffix]
+    cli_output = tmp_path / "cli"
+    desktop_output = tmp_path / "desktop"
+    result = main(["export", str(source), "--format", format_name, "-o", str(cli_output)])
+    assert result == 0
+    settings = DesktopSettings(project_directory=tmp_path, output_directory=desktop_output)
+    worker = Worker(
+        "Export",
+        ScriptMode.SOURCE,
+        [source],
+        False,
+        (ArtifactFormat(format_name),),
+        settings=settings,
+        policy=ConflictPolicy.ERROR,
+    )
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert "failed" not in messages[0].lower()
+    assert (desktop_output / f"input.{suffix}").read_bytes() == (cli_output / f"input.{suffix}").read_bytes()
+
+
+def test_desktop_folder_filter_matches_cli_conversion(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    inputs = tmp_path / "input"
+    inputs.mkdir()
+    (inputs / "keep.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    (inputs / "ignore.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    cli_output, desktop_output = tmp_path / "cli", tmp_path / "desktop"
+    assert main(["transliterate", str(inputs), "--glob", "keep*", "--to", "cyrillic", "-o", str(cli_output)]) == 0
+    worker = Worker(
+        "Convert Script",
+        ScriptMode.CYRILLIC,
+        [],
+        False,
+        settings=DesktopSettings(project_directory=tmp_path, output_directory=desktop_output),
+        policy=ConflictPolicy.ERROR,
+        selection=InputSpec((inputs,), glob="keep*", recursive=True),
+    )
+    worker.run()
+    assert (desktop_output / "keep CYR.srt").read_bytes() == (cli_output / "keep CYR.srt").read_bytes()
+    assert sorted(path.name for path in desktop_output.iterdir()) == ["keep CYR.srt"]
+
+
+@pytest.mark.parametrize(("kind", "pattern"), [("glob", "*keep*.srt"), ("regex", r"keep.*\.srt$")])
+@pytest.mark.parametrize("recursive", [False, True])
+def test_gui_folder_filter_and_recursion_match_cli(
+    tmp_path: Path, monkeypatch, kind: str, pattern: str, recursive: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    folder = tmp_path / "sources"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    for path in (folder / "keep-a.srt", folder / "skip.srt", nested / "keep-b.srt"):
+        path.write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    args = ["transliterate", str(folder), "--to", "cyrillic", f"--{kind}", pattern, "-o", str(cli_dir)]
+    args.append("--recursive" if recursive else "--no-recursive")
+    assert main(args) == 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(1)
+    window.output_directory.setText(str(gui_dir))
+    window.filter_kind.setCurrentIndex(1 if kind == "glob" else 2)
+    window.pattern.setText(pattern)
+    window.recursive.setChecked(recursive)
+    window.add_paths([folder])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    cli_outputs = {path.relative_to(cli_dir): path.read_bytes() for path in cli_dir.rglob("*.srt")}
+    gui_outputs = {path.relative_to(gui_dir): path.read_bytes() for path in gui_dir.rglob("*.srt")}
+    assert gui_outputs == cli_outputs
+    assert len(gui_outputs) == (2 if recursive else 1)
+    window.close()
+
+
+@pytest.mark.parametrize(("kind", "pattern"), [("glob", "missing*.srt"), ("regex", "[")])
+def test_gui_and_cli_report_invalid_or_empty_folder_filters(
+    tmp_path: Path, monkeypatch, kind: str, pattern: str
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    folder = tmp_path / "sources"
+    folder.mkdir()
+    (folder / "sample.srt").write_text("Salom", encoding="utf-8")
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    assert main(["transliterate", str(folder), "--to", "cyrillic", f"--{kind}", pattern, "-o", str(cli_dir)]) != 0
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(1)
+    window.output_directory.setText(str(gui_dir))
+    window.filter_kind.setCurrentIndex(1 if kind == "glob" else 2)
+    window.pattern.setText(pattern)
+    window.add_paths([folder])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    assert "Preflight failed" in window.details.toPlainText()
+    assert not cli_dir.exists()
+    assert not gui_dir.exists()
+    window.close()
+
+
+def test_desktop_export_script_override_matches_cli_project_configuration(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "elevenlabs-toolkit.toml").write_text('[text]\nscript = "cyrillic"\n', encoding="utf-8")
+    source = transcript(tmp_path / "input.json")
+    cli_output, desktop_output = tmp_path / "cli", tmp_path / "desktop"
+    assert main(["export", str(source), "--format", "txt", "--script", "latin", "-o", str(cli_output)]) == 0
+    settings = DesktopSettings(
+        project_directory=tmp_path, output_directory=desktop_output, output_script=ScriptMode.LATIN
+    )
+    worker = Worker(
+        "Export",
+        ScriptMode.SOURCE,
+        [source],
+        False,
+        (ArtifactFormat.TXT,),
+        settings=settings,
+        policy=ConflictPolicy.ERROR,
+    )
+    worker.run()
+    assert (desktop_output / "input.txt").read_bytes() == (cli_output / "input.txt").read_bytes()
+    assert "Salom" in (desktop_output / "input.txt").read_text(encoding="utf-8")
 
 
 def test_clean_matches_cli_and_inspection_writes_nothing(tmp_path: Path, monkeypatch) -> None:
@@ -65,6 +2175,81 @@ def test_inspection_continues_after_malformed_input(tmp_path: Path) -> None:
     assert '"valid": true' in messages[0]
 
 
+@pytest.mark.parametrize("include_generated", [False, True])
+def test_inspect_generated_and_malformed_files_matches_cli(
+    tmp_path: Path, monkeypatch, capsys, include_generated: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    original = transcript(sources / "valid.json")
+    (sources / "bad.json").write_text("not json", encoding="utf-8")
+    assert main(["clean", str(original), "-o", str(sources)]) == 0
+    capsys.readouterr()
+    before = {path: path.read_bytes() for path in sources.iterdir()}
+    args = ["--json", "inspect", str(sources)]
+    if include_generated:
+        args.append("--include-generated")
+    assert main(args) == 1
+    cli = json.loads(capsys.readouterr().out)["transcripts"]
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(4)
+    window.include_generated.setChecked(include_generated)
+    window.report_mode.setCurrentText("JSON")
+    window.add_paths([sources])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    rows = json.loads(window.details.toPlainText())["results"]
+    for row in rows:
+        row.pop("sources")
+    assert rows == cli
+    assert len(rows) == (3 if include_generated else 2)
+    assert {path: path.read_bytes() for path in sources.iterdir()} == before
+    window.close()
+
+
+@pytest.mark.parametrize("include_generated", [False, True])
+def test_export_generated_json_selection_matches_cli(
+    tmp_path: Path, monkeypatch, capsys, include_generated: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+    app = QApplication.instance() or QApplication([])
+    source = transcript(tmp_path / "valid.json")
+    generated_dir = tmp_path / "generated"
+    assert main(["clean", str(source), "-o", str(generated_dir)]) == 0
+    capsys.readouterr()
+    cli_dir, gui_dir = tmp_path / "cli", tmp_path / "gui"
+    args = ["export", str(generated_dir), "--format", "txt", "-o", str(cli_dir)]
+    if include_generated:
+        args.append("--include-generated")
+    code = main(args)
+    capsys.readouterr()
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.navigation.setCurrentRow(2)
+    window.output_directory.setText(str(gui_dir))
+    window.export_formats[ArtifactFormat.SRT].setChecked(False)
+    window.export_formats[ArtifactFormat.TXT].setChecked(True)
+    window.include_generated.setChecked(include_generated)
+    window.add_paths([generated_dir])
+    window.start_job()
+    assert window.worker.wait(5000)
+    app.processEvents()
+    if include_generated:
+        assert code == 0
+        assert (gui_dir / "valid.clean.txt").read_bytes() == (cli_dir / "valid.clean.txt").read_bytes()
+    else:
+        assert code != 0
+        assert "Preflight failed" in window.details.toPlainText()
+        assert not gui_dir.exists()
+    window.close()
+
+
 def test_window_workflow_selection_and_configuration(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
@@ -92,6 +2277,106 @@ def test_window_workflow_selection_and_configuration(tmp_path: Path, monkeypatch
     window.navigation.setCurrentRow(5)
     assert '"available_profiles"' in window.details.toPlainText()
     assert not window.file_list.isVisible()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("profile", [None, "custom"])
+def test_configuration_view_matches_cli_with_user_project_and_profile_settings(
+    tmp_path: Path, monkeypatch, capsys, profile: str | None
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "dummy-secret-not-for-display")
+    user_config = tmp_path / "user.toml"
+    user_config.write_text("[segmentation]\nmax_lines = 3\n", encoding="utf-8")
+    monkeypatch.setattr("elevenlabs_toolkit.config.user_config_path", lambda: user_config)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "elevenlabs-toolkit.toml").write_text(
+        "[segmentation]\nmax_lines = 4\n[profiles.custom.segmentation]\nmax_lines = 5\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+    args = ["--json", "config", "show"]
+    if profile:
+        args.extend(["--profile", profile])
+    assert main(args) == 0
+    cli = json.loads(capsys.readouterr().out)
+
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.project_directory = project
+    window.refresh_profiles()
+    window.navigation.setCurrentRow(5)
+    if profile:
+        window.config_profile.setCurrentText(profile)
+    window.show_configuration()
+    displayed = window.details.toPlainText()
+    assert json.loads(displayed) == cli
+    assert json.loads(displayed)["effective"]["segmentation"]["max_lines"] == (5 if profile else 4)
+    assert "dummy-secret-not-for-display" not in displayed
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("case", ["invalid_project", "unknown_profile"])
+def test_configuration_errors_match_cli_and_gui_can_recover(tmp_path: Path, monkeypatch, capsys, case: str) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr("elevenlabs_toolkit.config.user_config_path", lambda: tmp_path / "missing-user.toml")
+    project = tmp_path / "project"
+    project.mkdir()
+    config_file = project / "elevenlabs-toolkit.toml"
+    config_file.write_text(
+        "[segmentation]\nunknown_option = 4\n" if case == "invalid_project" else "", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+    args = ["--json", "config", "show"]
+    if case == "unknown_profile":
+        args.extend(["--profile", "does-not-exist"])
+    assert main(args) == 2
+    cli_error = json.loads(capsys.readouterr().out)["message"]
+
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    window.project_directory = project
+    window.refresh_profiles()
+    window.navigation.setCurrentRow(5)
+    if case == "unknown_profile":
+        window.config_profile.setCurrentText("does-not-exist")
+    window.show_configuration()
+    assert window.details.toPlainText() == f"Configuration error: {cli_error}"
+
+    config_file.write_text("[profiles.fixed.segmentation]\nmax_lines = 4\n", encoding="utf-8")
+    window.config_profile.setCurrentText("Project default")
+    window.refresh_profiles()
+    window.config_profile.setCurrentText("fixed")
+    window.show_configuration()
+    assert json.loads(window.details.toPlainText())["effective"]["segmentation"]["max_lines"] == 4
+    window.close()
+    app.processEvents()
+
+
+def test_configuration_display_updates_when_profile_or_project_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr("elevenlabs_toolkit.config.user_config_path", lambda: tmp_path / "missing-user.toml")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "elevenlabs-toolkit.toml").write_text("[profiles.custom.segmentation]\nmax_lines = 4\n", encoding="utf-8")
+    (second / "elevenlabs-toolkit.toml").write_text("[segmentation]\nmax_lines = 5\n", encoding="utf-8")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getExistingDirectory", lambda *args: str(first))
+    window.select_project()
+    window.navigation.setCurrentRow(5)
+    window.config_profile.setCurrentText("custom")
+    assert json.loads(window.details.toPlainText())["effective"]["segmentation"]["max_lines"] == 4
+    window.config_profile.setCurrentText("Project default")
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QFileDialog.getExistingDirectory", lambda *args: str(second))
+    window.select_project()
+    assert json.loads(window.details.toPlainText())["effective"]["segmentation"]["max_lines"] == 5
     window.close()
     app.processEvents()
 
@@ -252,6 +2537,8 @@ def test_review_uses_prepared_plan_and_requires_confirmation(tmp_path: Path, app
         review_before_running=True,
     )
     reviews = []
+    retry_items = []
+    worker.failed_item.connect(retry_items.append, Qt.ConnectionType.DirectConnection)
     target = source.with_suffix(".srt")
 
     def answer(preview: str) -> None:
@@ -265,6 +2552,7 @@ def test_review_uses_prepared_plan_and_requires_confirmation(tmp_path: Path, app
     assert str(target) in reviews[0][0]
     assert reviews[0][1] is False
     assert target.exists() is approved
+    assert len(retry_items) == (0 if approved else 1)
 
 
 def test_desktop_transcribe_then_export_keeps_json_only_default(tmp_path: Path, monkeypatch) -> None:

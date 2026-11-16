@@ -322,9 +322,49 @@ have PySide6 installed.
 
 Choose Transcribe, Convert Script, Export, Clean, Inspect, or Configuration
 in the sidebar. Add files or folders with the buttons or drag and drop.
+The selected project configuration folder is remembered across launches and
+is included in named presets. If a preset's project folder is unavailable,
+choose or restore the folder before loading it.
 Folder filters apply within selected folders. Preview lists planned destinations
 and API requests. For Transcribe and Export, **Review before running** adds a
 confirmation step before the planned job starts.
+Changing inputs or settings marks a displayed preview as out of date; run
+Preview again to check the new plan. Starting a batch always plans it again.
+
+The batch table lists discovered inputs, output paths, statuses, and errors.
+Select a result and use **Open Selected Output Folder** to locate its output,
+or use **Save Batch Report** to save the displayed rows as JSON. The report
+does not overwrite an existing file. **Stop After Current File** stops before
+the next file; rows not processed are marked **Not run**.
+
+The **Preferences** menu saves and loads named presets and resets settings.
+Presets contain workflow settings and the selected project folder, but never
+the credentials-file field or API key. **Reset to Defaults** clears the current
+credentials-file selection as well as workflow settings; saved presets remain.
+**Show Effective Settings** displays the
+selected profile's settings, workflow overrides, effective values and the source
+of each value (default, user, project, profile or workflow override).
+
+For Convert Script and Export, **Preview Content** renders the first selected
+SRT, SRT-mini, or TXT output in the details area without writing a file. Long
+previews are truncated; use **Preview** to inspect all planned destinations.
+For an existing destination, the content preview indicates whether the current
+conflict policy would skip or replace it.
+
+After a batch, **Retry Unfinished** retries failed, cancelled and not-run items
+with the original settings and destinations. Existing outputs are skipped even
+if the original batch allowed replacement. The table and saved report retain
+successful results from the original batch. Transcription retries require review
+because they may make a new paid API request. A combined export stopped before
+publication can be retried without publishing a partial file. Previewing another
+plan keeps the prior batch retryable; the button then reads **Retry Previous Batch**.
+Switching workflows preserves each workflow's batch results and retry state until
+the app closes or a new batch replaces them.
+
+If transcription outputs change after planning, existing outputs are skipped
+without connecting to the provider. If a file disappears after a zero-request
+plan, the batch reports the change and asks you to start a new plan before any
+paid request can occur.
 
 Leave the output folder blank to save beside each source. Transcription writes
 `filename.ext.transcript.json` by default. Select additional formats in the
@@ -332,8 +372,52 @@ transcription panel, or open an existing transcript in Export to render it
 offline. Select **JSON** in the result selector to copy a machine-readable
 preview or result from the details area.
 
+Select **Use Output subfolder** to write to an `Output` folder beside each
+source. The custom output-folder field is temporarily disabled while this is
+selected; its previous value is restored when the option is turned off. Recursive
+folder scans skip nested `Output` folders while it is enabled; files or folders
+selected directly can still be used as inputs.
+
 The local launcher also works without installing the package:
 
 ```powershell
 python .\run_toolkit.py --help
 ```
+
+### Build the desktop application
+
+On macOS, a local build produces `dist/ElevenLabs Toolkit.app`. Use a separate
+build environment so packaging dependencies do not change the development
+virtual environment. Python 3.13 is used for the packaging toolchain:
+
+```sh
+UV_PROJECT_ENVIRONMENT=.venv-build uv sync --locked --extra gui --extra stt --python 3.13
+uv pip install --python .venv-build/bin/python pyinstaller==6.22.3
+.venv-build/bin/python scripts/build_gui.py
+```
+
+To verify the packaged macOS executable without contacting ElevenLabs, run
+the following from the project folder. It opens the window offscreen, checks
+the available workflows, and converts a temporary SRT file:
+
+```sh
+QT_QPA_PLATFORM=offscreen 'dist/ElevenLabs Toolkit.app/Contents/MacOS/ElevenLabs Toolkit' --self-test
+```
+
+Open the resulting app from Finder. The app defaults to your home directory as
+its configuration context; use Configuration to select a project folder and
+Transcribe's **Credentials file** field to select an existing `.env` file.
+The app's **Help → Credentials and API Costs** menu also explains this setup.
+The file should contain `ELEVENLABS_API_KEY=your-key` on its own line. Leave
+the field empty to use `.env` in the selected project folder. An API key in the
+process environment takes precedence. The GUI does not save the selected
+credentials-file path in preferences or presets, so select it again after
+restarting if it differs from the project default. On macOS, press
+Command-Shift-Period in the file picker to show hidden `.env` files.
+The local build is not notarized for distribution. Build on the destination
+platform; Windows packaging has not yet been verified.
+
+CI is configured to run desktop tests and build an offline-tested Windows app
+folder, and to build and offline-test a macOS app bundle. Successful jobs upload
+zipped artifacts. These jobs need to pass on GitHub before their artifacts can
+be considered verified; the macOS bundle is an unnotarized development build.

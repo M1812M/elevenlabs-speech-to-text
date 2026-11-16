@@ -26,6 +26,10 @@ def main() -> int:
         return 1
     source_directory = project_directory / "src"
     sys.path.insert(0, str(source_directory))
+    if sys.argv[1:] == ["--self-test"]:
+        from elevenlabs_toolkit.gui import self_test
+
+        return self_test()
     from elevenlabs_toolkit.gui import main as gui_main
 
     return gui_main()
