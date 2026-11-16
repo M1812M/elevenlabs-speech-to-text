@@ -1,5 +1,9 @@
 # Iterative GUI Expansion Implementation Plan
 
+> Historical implementation record: intermediate checklists and pending lists below
+> describe earlier states. For the current parity audit and remaining work, see
+> [Desktop parity audit and next iterations](2026-11-15-desktop-parity-audit.md).
+
 > For agentic workers: use superpowers:executing-plans to implement one milestone at a time. Each milestone ends with a usable application and verification.
 
 **Goal** — Expose the toolkit's existing CLI workflows through the English desktop interface in manageable iterations.

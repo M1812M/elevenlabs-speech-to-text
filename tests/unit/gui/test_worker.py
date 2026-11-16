@@ -7,7 +7,17 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 
 from elevenlabs_toolkit.gui import Worker
-from elevenlabs_toolkit.models import ScriptMode
+from elevenlabs_toolkit.models import InputSpec, ScriptMode
+
+
+def test_folder_conversion_includes_legacy_script_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "sample.latin.srt"
+    source.write_text("1\n00:00:00,000 --> 00:00:01,000\nSalom\n", encoding="utf-8")
+    worker = Worker("Convert Script", ScriptMode.CYRILLIC, [], False, selection=InputSpec((tmp_path,)))
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert (tmp_path / "sample CYR.srt").exists(), messages
 
 
 def test_conversion_continues_after_bad_input_and_preserves_source(tmp_path: Path) -> None:

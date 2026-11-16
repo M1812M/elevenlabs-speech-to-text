@@ -316,6 +316,10 @@ uv sync --locked --extra gui --extra stt --extra dev
 uv run --locked --extra gui --extra stt --extra dev python run_gui.py
 ```
 
+After installing the GUI extra, `python run_gui.py` also works from the
+project folder: it uses the project `.venv` if the current Python does not
+have PySide6 installed.
+
 Choose Transcribe, Convert Script, Export, Clean, Inspect, or Configuration
 in the sidebar. Add files or folders with the buttons or drag and drop.
 Folder filters apply within selected folders. Preview lists planned destinations

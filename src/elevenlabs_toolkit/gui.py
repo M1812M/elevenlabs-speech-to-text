@@ -115,11 +115,6 @@ class Worker(QThread):
                     suffixes[self.action],
                     exclude_generated=self.action in {"Export", "Clean", "Inspect"} and not self.include_generated,
                     should_stop=self.isInterruptionRequested,
-                    exclude_folder_suffixes=(
-                        (".latin.srt", ".cyrillic.srt", ".latin.txt", ".cyrillic.txt")
-                        if self.action == "Convert Script"
-                        else ()
-                    ),
                 )
             self.status.emit("Planning outputs…")
             prepared = prepare_files(self.action, paths, self.mode, self.policy, self.formats, self.settings)
