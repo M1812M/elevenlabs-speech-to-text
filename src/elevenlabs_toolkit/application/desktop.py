@@ -1,6 +1,6 @@
 """Shared preparation for desktop previews and execution.
 
-The desktop defaults to source-adjacent outputs. Existing CLI planners retain
+The GUI chooses its output mode and passes it here. Existing CLI planners retain
 their explicit output-directory behavior.
 """
 
@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..config import effective_config, profile_options
+from ..files.discovery import _natural_path_key
 from ..models import (
     ArtifactFormat,
     ConflictPolicy,
@@ -85,6 +86,9 @@ class PreparedFile:
     plan: JobPlan
     export: ExportOptions | None = None
     transcription: TranscriptionOptions | None = None
+    retry_replace_signature: tuple[int, int, int, int, int] | None = None
+    retry_export_signatures: tuple[tuple[Path, tuple[int, int, int, int, int]], ...] = ()
+    protected_sources: tuple[Path, ...] = ()
 
 
 def prepare_files(
@@ -187,6 +191,8 @@ def prepare_files(
     if action == "Export" and ArtifactFormat.COMBINED_TXT in formats:
         config = settings.configuration()
         segmentation, text = profile_options(config["profile"], config)
+        if ArtifactFormat.CLEAN_JSON in formats and text.cleanup is None:
+            text = replace(text, cleanup="uzbek")
         directories = (
             (output_directory,)
             if output_directory is not None
@@ -199,10 +205,13 @@ def prepare_files(
         for directory in directories:
             group = tuple(
                 sorted(
-                    source
-                    for source in sources
-                    if output_directory is not None
-                    or (source.parent / "Output" if settings.output_subfolder else source.parent) == directory
+                    (
+                        source
+                        for source in sources
+                        if output_directory is not None
+                        or (source.parent / "Output" if settings.output_subfolder else source.parent) == directory
+                    ),
+                    key=_natural_path_key,
                 )
             )
             options = ExportOptions((ArtifactFormat.COMBINED_TXT,), directory, segmentation, text)
@@ -250,4 +259,4 @@ def prepare_files(
             for index in {index for index, _ in entries}:
                 item = prepared[index]
                 prepared[index] = replace(item, plan=replace(item.plan, conflicts=(*item.plan.conflicts, conflict)))
-    return tuple(prepared)
+    return tuple(replace(item, protected_sources=sources) for item in prepared)

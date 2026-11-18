@@ -124,6 +124,7 @@ def _prepare_outputs(
     decoded: dict[str, bytes | str],
     export_options: ExportOptions,
     policy: ConflictPolicy,
+    replace_existing: Callable[[Path], bool] | None = None,
 ) -> dict[ArtifactFormat, bytes | str | None]:
     prepared: dict[ArtifactFormat, bytes | str | None] = {}
     for output_format, output in outputs.items():
@@ -136,7 +137,11 @@ def _prepare_outputs(
                     f"ElevenLabs response did not contain requested remote format {output_format.value}"
                 )
             prepared[output_format] = content
-        elif policy is ConflictPolicy.SKIP and _path_occupied(output.target):
+        elif (
+            policy is ConflictPolicy.SKIP
+            and _path_occupied(output.target)
+            and not (replace_existing is not None and replace_existing(output.target))
+        ):
             prepared[output_format] = None
         else:
             prepared[output_format] = render_artifact(output_format, transcript, payload, export_options)
@@ -190,6 +195,7 @@ def execute_transcription(
     request_delay: float = 0.0,
     fail_fast: bool = False,
     progress: Callable[[str], None] | None = None,
+    replace_existing: Callable[[Path], bool] | None = None,
 ) -> JobResult:
     if not plan.valid:
         details = "; ".join(f"{item.target}: {item.reason}" for item in plan.conflicts)
@@ -212,7 +218,10 @@ def execute_transcription(
         outputs = _artifact_map(plan, source)
         completed_formats: set[ArtifactFormat] = set()
 
-        if policy is ConflictPolicy.SKIP and all(_path_occupied(output.target) for output in outputs.values()):
+        if policy is ConflictPolicy.SKIP and all(
+            _path_occupied(output.target) and not (replace_existing is not None and replace_existing(output.target))
+            for output in outputs.values()
+        ):
             results.extend(
                 ArtifactResult(output, ArtifactStatus.SKIPPED, "output already exists") for output in outputs.values()
             )
@@ -264,6 +273,7 @@ def execute_transcription(
                 decoded,
                 export_options,
                 effective_policy,
+                replace_existing,
             )
             if progress:
                 progress(
@@ -274,13 +284,20 @@ def execute_transcription(
 
             for output_format, content in prepared.items():
                 output = outputs[output_format]
+                write_policy = (
+                    ConflictPolicy.REPLACE
+                    if policy is ConflictPolicy.SKIP
+                    and replace_existing is not None
+                    and replace_existing(output.target)
+                    else effective_policy
+                )
                 if content is None:
                     results.append(ArtifactResult(output, ArtifactStatus.SKIPPED, "output already exists"))
                 elif isinstance(content, bytes):
-                    target, status = atomic_write_bytes(output.target, content, effective_policy)
+                    target, status = atomic_write_bytes(output.target, content, write_policy)
                     results.append(ArtifactResult(replace(output, target=target), status))
                 else:
-                    target, status = atomic_write_text(output.target, content, effective_policy)
+                    target, status = atomic_write_text(output.target, content, write_policy)
                     results.append(ArtifactResult(replace(output, target=target), status))
                 completed_formats.add(output_format)
             if progress:

@@ -187,6 +187,17 @@ def render_artifact(
     raise ExportError(f"unsupported local export format: {artifact_format.value}")
 
 
+def render_combined_section(source: Path, transcript: Transcript, options: ExportOptions) -> str:
+    """Render one source section consistently for export and content preview."""
+    _validate_pause_timings(transcript, options)
+    sentences = sentences_from_transcript(
+        transcript, options.segmentation, text_transform=_text_transform(options, transcript)
+    )
+    return render_txt(
+        [(sentence.text, sentence.speaker) for sentence in sentences], include_source=source.name
+    ).rstrip()
+
+
 def execute_export(
     plan: JobPlan,
     options: ExportOptions,
@@ -195,6 +206,7 @@ def execute_export(
     fail_fast: bool = False,
     should_stop: Callable[[], bool] | None = None,
     source_finished: Callable[[Path], None] | None = None,
+    replace_existing: Callable[[Path], bool] | None = None,
 ) -> JobResult:
     if not plan.valid:
         details = "; ".join(f"{item.target}: {item.reason}" for item in plan.conflicts)
@@ -222,13 +234,23 @@ def execute_export(
         if plan.dry_run:
             results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "dry-run"))
             continue
-        if policy is ConflictPolicy.SKIP and (artifact.target.exists() or artifact.target.is_symlink()):
+        retry_replace = (
+            policy is ConflictPolicy.SKIP and replace_existing is not None and replace_existing(artifact.target)
+        )
+        if (
+            policy is ConflictPolicy.SKIP
+            and not retry_replace
+            and (artifact.target.exists() or artifact.target.is_symlink())
+        ):
             results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "output already exists"))
             continue
         try:
             payload, transcript = load(artifact.source)
             content = render_artifact(artifact.format, transcript, payload, options)
-            written_path, status = atomic_write_text(artifact.target, content, effective_policy)
+            retry_replace = retry_replace and replace_existing is not None and replace_existing(artifact.target)
+            written_path, status = atomic_write_text(
+                artifact.target, content, ConflictPolicy.REPLACE if retry_replace else effective_policy
+            )
             actual = replace(artifact, target=written_path)
             results.append(ArtifactResult(actual, status))
         except Exception as exc:
@@ -240,7 +262,14 @@ def execute_export(
         if plan.dry_run:
             results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "dry-run"))
             continue
-        if policy is ConflictPolicy.SKIP and (artifact.target.exists() or artifact.target.is_symlink()):
+        retry_replace = (
+            policy is ConflictPolicy.SKIP and replace_existing is not None and replace_existing(artifact.target)
+        )
+        if (
+            policy is ConflictPolicy.SKIP
+            and not retry_replace
+            and (artifact.target.exists() or artifact.target.is_symlink())
+        ):
             results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "output already exists"))
             continue
         try:
@@ -250,26 +279,17 @@ def execute_export(
                     results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "cancelled before publication"))
                     return JobResult(tuple(results))
                 _payload, transcript = load(source)
-                _validate_pause_timings(transcript, options)
-                transform = _text_transform(options, transcript)
-                sentences = sentences_from_transcript(
-                    transcript,
-                    options.segmentation,
-                    text_transform=transform,
-                )
-                sections.append(
-                    render_txt(
-                        [(sentence.text, sentence.speaker) for sentence in sentences],
-                        include_source=source.name,
-                    ).rstrip()
-                )
+                sections.append(render_combined_section(source, transcript, options))
                 if source_finished is not None:
                     source_finished(source)
             if should_stop is not None and should_stop():
                 results.append(ArtifactResult(artifact, ArtifactStatus.SKIPPED, "cancelled before publication"))
                 return JobResult(tuple(results))
             content = "\n\n".join(section for section in sections if section) + "\n"
-            written_path, status = atomic_write_text(artifact.target, content, effective_policy)
+            retry_replace = retry_replace and replace_existing is not None and replace_existing(artifact.target)
+            written_path, status = atomic_write_text(
+                artifact.target, content, ConflictPolicy.REPLACE if retry_replace else effective_policy
+            )
             results.append(ArtifactResult(replace(artifact, target=written_path), status))
         except Exception as exc:
             results.append(ArtifactResult(artifact, ArtifactStatus.FAILED, f"{type(exc).__name__}: {exc}"))

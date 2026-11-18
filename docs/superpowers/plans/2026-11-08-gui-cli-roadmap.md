@@ -4,6 +4,25 @@
 > describe earlier states. For the current parity audit and remaining work, see
 > [Desktop parity audit and next iterations](2026-11-15-desktop-parity-audit.md).
 
+## Current status — 2026-11-17
+
+The desktop app exposes Transcribe, Convert Script, Export, Clean, Inspect and
+Configuration. It has batch status and retry, settings and presets, output and
+content previews, and a packaged macOS development app. New GUI workflows
+default to an `Output` subfolder beside each source; existing saved preferences
+are retained. Converted script names use ` LTN` or ` CYR`.
+
+The remaining work is behavioral parity verification across the CLI options,
+native window and keyboard interaction, a fresh GitHub run for the Windows and
+Linux CI fixes, and platform/distribution verification. See the
+[parity audit](2026-11-15-desktop-parity-audit.md) for the detailed checklist,
+evidence and limits. The milestones, defaults and checkboxes below are the
+historical plan, not the current status.
+
+---
+
+## Historical plan
+
 > For agentic workers: use superpowers:executing-plans to implement one milestone at a time. Each milestone ends with a usable application and verification.
 
 **Goal** — Expose the toolkit's existing CLI workflows through the English desktop interface in manageable iterations.
@@ -157,7 +176,7 @@ Verification: 359 tests pass, Ruff passes, formatting passes for 84 files, and m
 
 Remaining: advanced export formats/options, combined exports with proper grouping and cancellation, advanced transcription options and provider formats, all conflict/filter controls, background discovery, per-file status table, credential-file selection, full per-workflow option state, and the previously agreed suffixed audio JSON naming. Current JSON naming remains the CLI-compatible stem.json until the shared planner supports explicit GUI naming. Full goal completion is unproven and the goal remains active.
 
-### Final verification
+### Historical verification — 2026-11-08
 
 The desktop exposes Transcribe, Convert Script, Export, Clean, Inspect, and
 Configuration. The CLI wizard maps to Review before running on Transcribe and

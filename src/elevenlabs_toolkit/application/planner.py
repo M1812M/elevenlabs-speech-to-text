@@ -36,6 +36,12 @@ def _safe_leaf_name(value: str) -> bool:
     return value.split(".", 1)[0].upper() not in _WINDOWS_DEVICE_NAMES
 
 
+def validate_combined_name(value: str) -> None:
+    path = Path(value)
+    if not _safe_leaf_name(value) or path.is_absolute() or path.name != value:
+        raise PlanningError("combined_name must be a non-empty filename, not a path")
+
+
 def _validate_transcription_names(
     sources: tuple[Path, ...],
     formats: tuple[ArtifactFormat, ...],
@@ -187,9 +193,8 @@ def plan_exports(
             requested.append(PlannedArtifact(source, target, artifact_format))
 
     if ArtifactFormat.COMBINED_TXT in options.formats:
+        validate_combined_name(combined_name)
         combined_path = Path(combined_name)
-        if not _safe_leaf_name(combined_name) or combined_path.is_absolute() or combined_path.name != combined_name:
-            raise PlanningError("combined_name must be a non-empty filename, not a path")
         target = options.output_dir / combined_path
         requested.append(PlannedArtifact(source_tuple[0], target, ArtifactFormat.COMBINED_TXT))
 

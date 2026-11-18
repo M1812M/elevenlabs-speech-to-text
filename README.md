@@ -1,7 +1,11 @@
 # ElevenLabs Toolkit
 
-A small Windows-friendly CLI for sending local audio or video to ElevenLabs
-Speech to Text and writing ready-to-use subtitle and transcript files.
+An English desktop app and CLI for transcribing local audio or video with
+ElevenLabs, exporting subtitles and transcripts, and converting Uzbek text
+between Latin and Cyrillic scripts.
+
+For the desktop app, see [Desktop setup and use](#desktop-setup-and-use).
+The command-line quick start follows below.
 
 `transcribe` saves the complete provider response as the reusable transcript
 JSON. It does not create a separate cache manifest or persistent lock file.
@@ -309,7 +313,9 @@ uv run ruff format --check .
 uv run mypy
 ```
 
-For desktop development, include the GUI extra and launch the window:
+## Desktop setup and use
+
+To run the desktop app from the project, include the GUI extra and launch the window:
 
 ```sh
 uv sync --locked --extra gui --extra stt --extra dev
@@ -333,9 +339,11 @@ Changing inputs or settings marks a displayed preview as out of date; run
 Preview again to check the new plan. Starting a batch always plans it again.
 
 The batch table lists discovered inputs, output paths, statuses, and errors.
-Select a result and use **Open Selected Output Folder** to locate its output,
-or use **Save Batch Report** to save the displayed rows as JSON. The report
-does not overwrite an existing file. **Stop After Current File** stops before
+The preview, stop, and start buttons stay visible at the bottom while the main
+panel scrolls in a smaller window.
+Use **Open Output Folder** to locate the shared output folder, or select a row
+first when the batch has several destinations. Use **Save Batch Report** to save the displayed rows as JSON. The report
+does not overwrite an existing file. **Stop After File** stops before
 the next file; rows not processed are marked **Not run**.
 
 The **Preferences** menu saves, loads and deletes named presets, and resets settings.
@@ -347,16 +355,20 @@ selected profile's settings, workflow overrides, effective values and the source
 of each value (default, user, project, profile or workflow override).
 
 For Convert Script and Export, **Preview Content** renders the first selected
-SRT, SRT-mini, or TXT output in the details area without writing a file. Long
+SRT, SRT-mini, TXT, or combined TXT output in the details area without writing a file. Long
 previews are truncated; use **Preview** to inspect all planned destinations.
 For an existing destination, the content preview indicates whether the current
 conflict policy would skip or replace it.
 
 After a batch, **Retry Unfinished** retries failed, cancelled and not-run items
-with the original settings and destinations. Existing outputs are skipped even
-if the original batch allowed replacement. The table and saved report retain
+with the original settings and destinations. It preserves successful outputs
+and skips outputs created or changed since the failed attempt. If the original
+batch selected Replace, retry can replace an unchanged existing output for an
+unfinished item. The table and saved report retain
 successful results from the original batch. Transcription retries require review
-because they may make a new paid API request. A combined export stopped before
+because they may make a new paid API request. They use the currently selected
+credentials file, so you can correct it before retrying; other processing settings
+and destinations remain those of the original batch. A combined export stopped before
 publication can be retried without publishing a partial file. Previewing another
 plan keeps the prior batch retryable; the button then reads **Retry Previous Batch**.
 Switching workflows preserves each workflow's batch results and retry state until
@@ -367,17 +379,24 @@ without connecting to the provider. If a file disappears after a zero-request
 plan, the batch reports the change and asks you to start a new plan before any
 paid request can occur.
 
-Leave the output folder blank to save beside each source. Transcription writes
+By default, outputs are saved in an `Output` subfolder beside each source.
+Clear **Use Output subfolder** and leave the output folder blank to save beside
+each source, or choose a custom folder. Transcription writes
 `filename.ext.transcript.json` by default. Select additional formats in the
 transcription panel, or open an existing transcript in Export to render it
 offline. Select **JSON** in the result selector to copy a machine-readable
-preview or result from the details area.
+preview or result from the details area. Batch results include overall status,
+written/skipped/failed artifact counts and individual results.
 
-Select **Use Output subfolder** to write to an `Output` folder beside each
-source. The custom output-folder field is temporarily disabled while this is
-selected; its previous value is restored when the option is turned off. Recursive
+The custom output-folder field is temporarily disabled while **Use Output
+subfolder** is selected. Its previous value is restored when the option is turned off. Recursive
 folder scans skip nested `Output` folders while it is enabled; files or folders
 selected directly can still be used as inputs.
+When using a custom output folder inside a recursively scanned input folder,
+matching supported files in that folder are included in the scan. The app warns
+when the selected inputs and output location can lead to this. To avoid reprocessing
+them, choose an output folder outside the input tree or select the input files
+explicitly.
 
 The local launcher also works without installing the package:
 
@@ -418,7 +437,14 @@ Command-Shift-Period in the file picker to show hidden `.env` files.
 The local build is not notarized for distribution. Build on the destination
 platform; Windows packaging has not yet been verified.
 
-CI is configured to run desktop tests and build an offline-tested Windows app
-folder, and to build and offline-test a macOS app bundle. Successful jobs upload
-zipped artifacts. These jobs need to pass on GitHub before their artifacts can
-be considered verified; the macOS bundle is an unnotarized development build.
+CI runs desktop tests and builds app artifacts on macOS and Windows. The macOS
+job has built, offline-tested and uploaded an app bundle; the downloaded bundle
+also passed the offline self-test locally. The user confirmed that a local
+packaged app opens and resizes; other native interactions remain to be verified.
+It is an unnotarized development build. The Windows job
+previously failed during GUI tests before packaging, so its app build remains
+unverified. Fixes for the failed Windows and Linux GUI checks need a new CI run.
+Artifacts from successful jobs are available on the corresponding
+[GitHub Actions run](https://github.com/M1812M/elevenlabs-speech-to-text/actions).
+A [manual desktop checklist](docs/desktop-manual-checks.md) covers visible
+window behavior and an offline conversion on a real display.

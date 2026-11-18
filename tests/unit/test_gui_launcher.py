@@ -25,6 +25,16 @@ def test_launcher_self_test_exercises_window_and_offline_conversion() -> None:
     assert "Desktop self-test passed" in result.stdout
 
 
+def test_self_test_rejects_broken_content_preview(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from elevenlabs_toolkit.gui import Worker, self_test
+
+    monkeypatch.setattr(Worker, "preview_content", lambda self, prepared: "invalid preview")
+    with pytest.raises(RuntimeError, match="preview"):
+        self_test()
+
+
 def test_launcher_uses_project_environment_when_pyside_is_missing(tmp_path: Path, monkeypatch) -> None:
     spec = importlib.util.spec_from_file_location("test_run_gui", LAUNCHER)
     assert spec is not None and spec.loader is not None

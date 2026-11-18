@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import sys
 import time
 import traceback
@@ -10,7 +11,7 @@ from dataclasses import replace as replace_settings
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QSettings, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QByteArray, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDragMoveEvent, QDropEvent, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -42,6 +43,26 @@ from .application.desktop import DesktopSettings, PreparedFile, prepare_files
 from .files.discovery import AUDIO_VIDEO_SUFFIXES, DiscoveryCancelled, DiscoveryError, discover_inputs, validate_filter
 from .gui_options import FORMAT_DESCRIPTIONS, TextOptionsPanel, TranscriptionPanel
 from .models import ArtifactFormat, ConflictPolicy, InputSpec, ScriptMode
+
+
+def _regular_file_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _retry_may_replace(item: PreparedFile, path: Path) -> bool:
+    signature = dict(item.retry_export_signatures).get(path)
+    if signature is None or _regular_file_signature(path) != signature:
+        return False
+    try:
+        return all(not source.samefile(path) for source in (item.protected_sources or item.plan.sources))
+    except OSError:
+        return False
 
 
 class FileList(QListWidget):
@@ -134,10 +155,18 @@ class Worker(QThread):
         self.retry_plan = retry_plan
         self.review_answered = Event()
         self.review_approved = False
+        self.reviewed_request_sources: set[Path] | None = None
+
+    def transcription_needs_request(self, item: PreparedFile) -> bool:
+        return self.policy is not ConflictPolicy.SKIP or any(
+            not (artifact.target.exists() or artifact.target.is_symlink()) or _retry_may_replace(item, artifact.target)
+            for artifact in item.plan.artifacts
+        )
 
     def run(self) -> None:
         outcomes = []
         records: list[dict] = []
+        artifact_records: list[dict] = []
         cancelled = False
         try:
             paths = self.paths
@@ -171,6 +200,34 @@ class Worker(QThread):
                     allow_preview_conflicts=self.preview_only,
                 )
             )
+            if self.retry_plan is not None and self.review_before_running and self.action == "Transcribe":
+                prepared = tuple(
+                    replace_settings(item, plan=replace_settings(item.plan, api_requests=1))
+                    if not item.plan.api_requests and self.transcription_needs_request(item)
+                    else item
+                    for item in prepared
+                )
+            if self.retry_plan is None and not self.preview_only and self.policy is ConflictPolicy.REPLACE:
+                prepared = tuple(
+                    replace_settings(
+                        item,
+                        retry_replace_signature=(
+                            _regular_file_signature(item.plan.artifacts[0].target)
+                            if self.action == "Convert Script" and len(item.plan.artifacts) == 1
+                            else None
+                        ),
+                        retry_export_signatures=(
+                            tuple(
+                                (artifact.target, signature)
+                                for artifact in item.plan.artifacts
+                                if (signature := _regular_file_signature(artifact.target)) is not None
+                            )
+                            if self.action in {"Export", "Clean", "Transcribe"}
+                            else ()
+                        ),
+                    )
+                    for item in prepared
+                )
             self.plan_ready.emit(
                 [
                     {
@@ -194,7 +251,18 @@ class Worker(QThread):
                 )
                 return
             if self.review_before_running:
-                self.review_requested.emit(self.preview_text(prepared))
+                if self.action == "Transcribe":
+                    self.reviewed_request_sources = {
+                        item.plan.sources[0] for item in prepared if self.transcription_needs_request(item)
+                    }
+                reviewed_plan = self.preview_text(prepared)
+                if self.reviewed_request_sources is not None and self.reviewed_request_sources != {
+                    item.plan.sources[0] for item in prepared if self.transcription_needs_request(item)
+                }:
+                    for retry_item in prepared:
+                        self.failed_item.emit(retry_item)
+                    raise DiscoveryCancelled("Outputs changed while preparing review; retry with the updated plan.")
+                self.review_requested.emit(reviewed_plan)
                 while not self.review_answered.wait(0.1):
                     if self.isInterruptionRequested():
                         break
@@ -202,6 +270,10 @@ class Worker(QThread):
                     for retry_item in prepared:
                         self.failed_item.emit(retry_item)
                     raise DiscoveryCancelled("Cancelled before processing any files")
+                if self.preview_text(prepared) != reviewed_plan:
+                    for retry_item in prepared:
+                        self.failed_item.emit(retry_item)
+                    raise DiscoveryCancelled("Outputs changed during review; retry and review the updated plan.")
             previous_request = False
             for index, item in enumerate(prepared, start=1):
                 if item.plan.api_requests and previous_request and self.settings.request_delay:
@@ -223,6 +295,20 @@ class Worker(QThread):
                 source = item.plan.sources[0]
                 self.status.emit(f"[{index}/{len(prepared)}] {self.action}: {source.name}")
                 data: dict = {}
+                previous_target = (
+                    _regular_file_signature(item.plan.artifacts[0].target)
+                    if self.action == "Convert Script"
+                    and self.policy is ConflictPolicy.REPLACE
+                    and len(item.plan.artifacts) == 1
+                    else item.retry_replace_signature
+                )
+                previous_exports = item.retry_export_signatures
+                if self.action in {"Export", "Clean", "Transcribe"} and self.policy is ConflictPolicy.REPLACE:
+                    previous_exports = tuple(
+                        (artifact.target, signature)
+                        for artifact in item.plan.artifacts
+                        if (signature := _regular_file_signature(artifact.target)) is not None
+                    )
                 try:
                     message, failed, data = self.execute_file(item)
                     outcomes.append(message)
@@ -232,8 +318,32 @@ class Worker(QThread):
                     outcomes.append(f"{source.name}: FAILED — {message}")
                     records.append({"source": str(source), "status": "failed", "error": str(exc)})
                     failed = True
+                if "artifacts" in data:
+                    artifact_records.extend(data["artifacts"])
+                elif item.plan.artifacts:
+                    for artifact in item.plan.artifacts:
+                        artifact_records.append(
+                            {
+                                "source": str(artifact.source),
+                                "target": str(data.get("target", artifact.target)),
+                                "format": artifact.format.value,
+                                "status": "failed" if failed else data.get("status", "written"),
+                                "message": message if failed else "",
+                            }
+                        )
                 if failed or data.get("status") == "cancelled":
-                    self.failed_item.emit(item)
+                    succeeded = {
+                        record["target"] for record in data.get("artifacts", ()) if record["status"] == "written"
+                    }
+                    self.failed_item.emit(
+                        replace_settings(
+                            item,
+                            retry_replace_signature=previous_target,
+                            retry_export_signatures=tuple(
+                                (path, signature) for path, signature in previous_exports if str(path) not in succeeded
+                            ),
+                        )
+                    )
                 for planned_source in item.plan.sources:
                     self.file_result.emit(
                         {
@@ -254,14 +364,39 @@ class Worker(QThread):
             cancelled = True
             outcomes.append(str(exc))
             self.batch_stopped.emit("Cancelled")
+        except DiscoveryError as exc:
+            message = (
+                str(exc)
+                .replace(
+                    "Pass exclude_generated=False to select it explicitly.",
+                    "Enable Include generated JSON to select it.",
+                )
+                .replace(
+                    "pass exclude_generated=False to include them.",
+                    "enable Include generated JSON to include them.",
+                )
+            )
+            detail = traceback.format_exc().replace(str(exc), message) if self.report_mode == "Verbose" else message
+            outcomes.append(f"Preflight failed: {detail}")
+            records.append({"status": "failed", "error": message})
         except Exception as exc:
             message = traceback.format_exc() if self.report_mode == "Verbose" else str(exc)
             outcomes.append(f"Preflight failed: {message}")
             records.append({"status": "failed", "error": str(exc)})
         if self.report_mode == "JSON":
+            was_cancelled = cancelled or self.isInterruptionRequested()
+            failed_batch = any(record.get("status") == "failed" or record.get("valid") is False for record in records)
             self.finished_result.emit(
                 json.dumps(
-                    {"cancelled": cancelled or self.isInterruptionRequested(), "results": records},
+                    {
+                        "status": "failed" if failed_batch else "cancelled" if was_cancelled else "ok",
+                        "written": sum(item["status"] == "written" for item in artifact_records),
+                        "skipped": sum(item["status"] == "skipped" for item in artifact_records),
+                        "failed": sum(item["status"] == "failed" for item in artifact_records),
+                        "artifacts": artifact_records,
+                        "cancelled": was_cancelled,
+                        "results": records,
+                    },
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -275,13 +410,18 @@ class Worker(QThread):
 
     def preview_content(self, prepared: tuple[PreparedFile, ...]) -> str:
         from .application.conversion import convert_srt
-        from .application.exporter import _read_payload, render_artifact
+        from .application.exporter import _read_payload, render_artifact, render_combined_section
         from .languages import get_language_processor
         from .models import Transcript
 
         for item in prepared:
             for artifact in item.plan.artifacts:
-                if artifact.format not in (ArtifactFormat.SRT, ArtifactFormat.SRT_MINI, ArtifactFormat.TXT):
+                if artifact.format not in (
+                    ArtifactFormat.SRT,
+                    ArtifactFormat.SRT_MINI,
+                    ArtifactFormat.TXT,
+                    ArtifactFormat.COMBINED_TXT,
+                ):
                     continue
                 if self.isInterruptionRequested():
                     raise DiscoveryCancelled("Content preview cancelled")
@@ -292,6 +432,21 @@ class Worker(QThread):
                         if artifact.format is ArtifactFormat.SRT
                         else get_language_processor("uzbek").transform_text(text, target=self.mode)
                     )
+                elif (
+                    self.action == "Export"
+                    and item.export is not None
+                    and artifact.format is ArtifactFormat.COMBINED_TXT
+                ):
+                    sections = []
+                    for source in item.plan.sources:
+                        if self.isInterruptionRequested():
+                            raise DiscoveryCancelled("Content preview cancelled")
+                        transcript = Transcript.from_payload(_read_payload(source))
+                        transcript = replace_settings(
+                            transcript, metadata={**dict(transcript.metadata), "source_name": source.stem}
+                        )
+                        sections.append(render_combined_section(source, transcript, item.export))
+                    content = "\n\n".join(section for section in sections if section) + "\n"
                 elif self.action == "Export" and item.export is not None:
                     payload = _read_payload(artifact.source)
                     transcript = Transcript.from_payload(payload)
@@ -308,13 +463,53 @@ class Worker(QThread):
                     action = "\nThe batch has an output conflict and cannot run until it is resolved."
                 elif artifact.target.exists() or artifact.target.is_symlink():
                     if self.policy is ConflictPolicy.SKIP:
-                        action = "\nThe existing output will be skipped if unchanged; the text below is a preview only."
+                        action = (
+                            "\nIf the output exists when the batch runs, it will be skipped; this is a preview only."
+                        )
                     elif self.policy is ConflictPolicy.REPLACE:
-                        action = "\nThe existing output will be replaced if unchanged when the batch runs."
+                        action = "\nIf the output exists when the batch runs, it will be replaced."
                     elif self.policy is ConflictPolicy.ERROR:
                         action = "\nThe existing output is a conflict; the batch cannot run until it is resolved."
-                return f"Content preview: {artifact.source} → {artifact.target}{action}\n\n{content[:limit]}{suffix}"
-        return "No SRT, SRT-mini, or TXT content is available to preview for this selection."
+                if self.report_mode == "JSON":
+                    return json.dumps(
+                        {
+                            "status": "conflict" if any(entry.plan.conflicts for entry in prepared) else "planned",
+                            "source": str(artifact.source),
+                            "sources": [str(source) for source in item.plan.sources]
+                            if artifact.format is ArtifactFormat.COMBINED_TXT
+                            else [str(artifact.source)],
+                            "target": str(artifact.target),
+                            "format": artifact.format.value,
+                            "content": content[:limit],
+                            "truncated": len(content) > limit,
+                            "warning": action.strip(),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                source_label = (
+                    ", ".join(str(source) for source in item.plan.sources)
+                    if artifact.format is ArtifactFormat.COMBINED_TXT
+                    else str(artifact.source)
+                )
+                return f"Content preview: {source_label} → {artifact.target}{action}\n\n{content[:limit]}{suffix}"
+        message = "No SRT, SRT-mini, TXT, or combined text content is available to preview for this selection."
+        conflicts = tuple(dict.fromkeys(conflict for item in prepared for conflict in item.plan.conflicts))
+        if self.report_mode == "JSON":
+            return json.dumps(
+                {
+                    "status": "conflict" if conflicts else "unavailable",
+                    "message": message,
+                    "conflicts": [
+                        {"target": str(conflict.target), "reason": conflict.reason} for conflict in conflicts
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        if conflicts:
+            return f"{message}\n\n{self.preview_text(prepared)}"
+        return message
 
     def preview_text(self, prepared: tuple[PreparedFile, ...]) -> str:
         lines = []
@@ -329,7 +524,24 @@ class Worker(QThread):
             for conflict in unique_conflicts
         ]
         conflict_targets = {conflict.target: conflict.reason for conflict in unique_conflicts}
-        requests = 0 if conflicts else sum(item.plan.api_requests for item in prepared)
+        requests = (
+            0
+            if conflicts
+            else sum(
+                item.plan.api_requests
+                for item in prepared
+                if (
+                    item.plan.sources[0] in self.reviewed_request_sources
+                    if self.action == "Transcribe" and self.reviewed_request_sources is not None
+                    else not (
+                        self.retry_plan is not None
+                        and self.action == "Transcribe"
+                        and self.policy is ConflictPolicy.SKIP
+                        and not self.transcription_needs_request(item)
+                    )
+                )
+            )
+        )
         attempts = requests * (1 + self.settings.retries)
         if conflicts:
             lines.append("The batch cannot run until its output conflicts are resolved.")
@@ -348,6 +560,7 @@ class Worker(QThread):
                     status = (
                         "Replace"
                         if self.policy is ConflictPolicy.REPLACE
+                        or (self.policy is ConflictPolicy.SKIP and _retry_may_replace(item, artifact.target))
                         else "Skip existing"
                         if self.policy is ConflictPolicy.SKIP
                         else "Conflict: output already exists"
@@ -399,16 +612,31 @@ class Worker(QThread):
             else:
                 converted = get_language_processor("uzbek").transform_text(text, target=self.mode)
             write_policy = ConflictPolicy.ERROR if self.policy is ConflictPolicy.RENAME else self.policy
+            if (
+                self.policy is ConflictPolicy.SKIP
+                and item.retry_replace_signature is not None
+                and _regular_file_signature(artifact.target) == item.retry_replace_signature
+                and all(not selected.samefile(artifact.target) for selected in (item.protected_sources or (source,)))
+            ):
+                write_policy = ConflictPolicy.REPLACE
             target, status = atomic_write_text(artifact.target, converted, write_policy)
             return f"{status.value}: {target}", False, {"status": status.value, "target": str(target)}
         if item.export is None:
             raise ValueError("Missing export configuration")
+
+        def may_replace(path: Path) -> bool:
+            return _retry_may_replace(item, path)
+
         if self.action == "Transcribe":
             if item.transcription is None:
                 raise ValueError("Missing transcription configuration")
-            needs_request = self.policy is not ConflictPolicy.SKIP or any(
-                not (artifact.target.exists() or artifact.target.is_symlink()) for artifact in item.plan.artifacts
-            )
+            needs_request = self.transcription_needs_request(item)
+            if (
+                needs_request
+                and self.reviewed_request_sources is not None
+                and source not in self.reviewed_request_sources
+            ):
+                raise ValueError("Outputs changed after review; retry and review the updated API request count.")
             if needs_request and not item.plan.api_requests:
                 raise ValueError("Output files changed after planning; start a new batch and review the plan again.")
             provider = (
@@ -425,6 +653,7 @@ class Worker(QThread):
                 progress=self.status.emit,
                 retries=self.settings.retries,
                 backoff_seconds=self.settings.retry_backoff,
+                replace_existing=may_replace,
             )
         else:
             result = execute_export(
@@ -434,6 +663,7 @@ class Worker(QThread):
                 fail_fast=self.settings.fail_fast,
                 should_stop=self.isInterruptionRequested,
                 source_finished=lambda source: self.status.emit(f"Combined text: processed {source.name}"),
+                replace_existing=may_replace,
             )
         message = "\n".join(
             f"{artifact.status.value}: {artifact.artifact.target} {artifact.message}" for artifact in result.artifacts
@@ -474,10 +704,22 @@ class WorkflowControls:
     filter_kind: int = 0
     pattern: str = ""
     output_directory: str = ""
-    output_subfolder: bool = False
+    output_subfolder: bool = True
     conflict: int = 0
     fail_fast: bool = False
     review: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("recursive", "include_generated", "output_subfolder", "fail_fast", "review"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"Invalid saved setting: {name}")
+        for name in ("pattern", "output_directory"):
+            if not isinstance(getattr(self, name), str):
+                raise ValueError(f"Invalid saved setting: {name}")
+        for name, maximum in (("filter_kind", 2), ("conflict", 3)):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value <= maximum:
+                raise ValueError(f"Invalid saved setting: {name}")
 
 
 @dataclass
@@ -517,7 +759,7 @@ class MainWindow(QMainWindow):
             except (ValueError, TypeError, AttributeError):
                 self.workflow_controls = {}
             geometry = settings.value("geometry")
-            if geometry is not None:
+            if isinstance(geometry, (QByteArray, bytes, bytearray, memoryview)):
                 self.restoreGeometry(geometry)
         self.active_workflow = 0
         self.project_directory = DesktopSettings().project_directory
@@ -530,12 +772,12 @@ class MainWindow(QMainWindow):
             str(settings.value("recent_output_directory", "")) if settings is not None else ""
         )
         root = QWidget()
-        outer = QHBoxLayout(root)
+        outer = QGridLayout(root)
         self.navigation = QListWidget()
         self.navigation.addItems(["Transcribe", "Convert Script", "Export", "Clean", "Inspect", "Configuration"])
         self.navigation.setFixedWidth(180)
         self.navigation.setCurrentRow(0)
-        outer.addWidget(self.navigation)
+        outer.addWidget(self.navigation, 0, 0, 2, 1)
         self.main_scroll = QScrollArea()
         self.main_scroll.setWidgetResizable(True)
         self.main_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -543,7 +785,9 @@ class MainWindow(QMainWindow):
         panel = QVBoxLayout(panel_widget)
         panel.setContentsMargins(0, 0, 0, 0)
         self.main_scroll.setWidget(panel_widget)
-        outer.addWidget(self.main_scroll, 1)
+        outer.addWidget(self.main_scroll, 0, 1)
+        outer.setColumnStretch(1, 1)
+        outer.setRowStretch(0, 1)
 
         self.heading = QLabel("Transcribe audio or video to reusable JSON")
         panel.addWidget(self.heading)
@@ -564,11 +808,15 @@ class MainWindow(QMainWindow):
         filters.setContentsMargins(0, 0, 0, 0)
         self.recursive = QCheckBox("Include subfolders")
         self.recursive.setChecked(True)
+        self.recursive.setToolTip("Search inside subfolders of each selected folder.")
         self.include_generated = QCheckBox("Include generated JSON")
+        self.include_generated.setToolTip("Allow generated transcript JSON files as inputs.")
         self.filter_kind = QComboBox()
         self.filter_kind.addItems(["No folder filter", "Glob", "Regular expression"])
+        self.filter_kind.setToolTip("Filter files found inside folders. Directly selected files are not filtered.")
         self.pattern = QLineEdit()
         self.pattern.setPlaceholderText("Match paths inside folders")
+        self.pattern.setToolTip("Example glob: *.srt. A regular expression matches the path relative to each folder.")
         self.pattern.setEnabled(False)
         self.pattern_error = QLabel()
         self.pattern_error.setStyleSheet("color: #b00020")
@@ -610,18 +858,21 @@ class MainWindow(QMainWindow):
         panel.addWidget(self.batch_table, 1)
         self.save_report = QPushButton("Save Batch Report…")
         self.save_report.clicked.connect(self.save_batch_report)
-        self.open_output = QPushButton("Open Selected Output Folder")
+        self.open_output = QPushButton("Open Output Folder")
+        self.open_output.setToolTip("Open the selected row's folder, or the shared folder when all outputs use one.")
         self.open_output.clicked.connect(self.open_output_folder)
-        batch_actions = QHBoxLayout()
-        batch_actions.addWidget(self.open_output)
+        batch_actions = QGridLayout()
+        batch_actions.addWidget(self.open_output, 0, 0)
         self.retry_button = QPushButton("Retry Unfinished")
         self.retry_button.setEnabled(False)
         self.retry_button.setToolTip(
-            "Retry failed, cancelled or not-run items using their original settings and destinations; existing outputs are skipped"
+            "Retry failed, cancelled or not-run items with their original settings and destinations; "
+            "existing outputs are skipped except unchanged failed targets from a Replace job. "
+            "Transcription uses the currently selected credentials file."
         )
         self.retry_button.clicked.connect(self.retry_failed)
-        batch_actions.addWidget(self.retry_button)
-        batch_actions.addWidget(self.save_report)
+        batch_actions.addWidget(self.retry_button, 0, 1)
+        batch_actions.addWidget(self.save_report, 1, 0)
         panel.addLayout(batch_actions)
 
         self.options = QStackedWidget()
@@ -658,6 +909,10 @@ class MainWindow(QMainWindow):
             self.export_formats[artifact_format] = checkbox
             format_row.addWidget(checkbox, index // 3, index % 3)
         self.export_text = TextOptionsPanel(advanced=True)
+        self.export_formats[ArtifactFormat.COMBINED_TXT].toggled.connect(
+            lambda checked: None if checked else self.export_text.combined_name_error.clear()
+        )
+        self.export_formats[ArtifactFormat.CLEAN_JSON].toggled.connect(self.export_text.cleanup_error.clear)
         export_layout.addWidget(self.export_text)
         self.options.addWidget(export_panel)
         clean_panel = QWidget()
@@ -697,10 +952,21 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setValue(0)
         self.output_controls = QWidget()
-        output_row = QHBoxLayout(self.output_controls)
+        output_layout = QVBoxLayout(self.output_controls)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        output_row = QGridLayout()
         output_row.setContentsMargins(0, 0, 0, 0)
+        output_layout.addLayout(output_row)
+        self.output_warning = QLabel()
+        self.output_warning.setWordWrap(True)
+        self.output_warning.setStyleSheet("color: #9b5000")
+        self.output_warning.hide()
+        output_layout.addWidget(self.output_warning)
         self.output_directory = QLineEdit()
         self.output_directory.setPlaceholderText("Beside source files")
+        self.output_directory.setToolTip(
+            "Clear Use Output subfolder to choose a folder; leave this blank to save beside sources."
+        )
         self.output_subfolder = QCheckBox("Use Output subfolder")
         self.output_subfolder.setToolTip(
             "Save into an Output folder inside each source folder instead of a custom folder."
@@ -710,6 +976,7 @@ class MainWindow(QMainWindow):
         self.output_subfolder.toggled.connect(self.output_directory.setDisabled)
         self.output_subfolder.toggled.connect(choose_output.setDisabled)
         self.conflict = QComboBox()
+        self.conflict.setToolTip("Choose what happens when an output already exists. Source files are protected.")
         for label, policy in (
             ("Skip existing", ConflictPolicy.SKIP),
             ("Replace existing", ConflictPolicy.REPLACE),
@@ -718,15 +985,15 @@ class MainWindow(QMainWindow):
         ):
             self.conflict.addItem(label, policy.value)
         self.fail_fast = QCheckBox("Stop on error")
-        for control_widget in (
-            QLabel("Output folder"),
-            self.output_directory,
-            self.output_subfolder,
-            choose_output,
-            self.conflict,
-            self.fail_fast,
-        ):
-            output_row.addWidget(control_widget)
+        self.fail_fast.setToolTip(
+            "Stop before processing the next file after an error; unfinished files can be retried."
+        )
+        output_row.addWidget(QLabel("Output folder"), 0, 0)
+        output_row.addWidget(self.output_directory, 0, 1, 1, 2)
+        output_row.addWidget(choose_output, 0, 3)
+        output_row.addWidget(self.output_subfolder, 1, 0, 1, 2)
+        output_row.addWidget(self.conflict, 1, 2)
+        output_row.addWidget(self.fail_fast, 1, 3)
         panel.addWidget(self.output_controls)
         model = self.conflict.model()
         assert isinstance(model, QStandardItemModel)
@@ -739,23 +1006,28 @@ class MainWindow(QMainWindow):
         self.preview = QPushButton("Preview")
         self.show_effective = QPushButton("Show Effective Settings")
         self.show_effective.setToolTip("Show profile settings and values explicitly overridden in this workflow")
-        batch_actions.addWidget(self.show_effective)
+        batch_actions.addWidget(self.show_effective, 1, 1)
         self.preview_content_button = QPushButton("Preview Content")
         self.preview_content_button.setToolTip(
             "Preview the first supported subtitle or text output without writing files"
         )
         self.preview_content_button.hide()
-        self.stop = QPushButton("Stop After Current File")
+        self.stop = QPushButton("Stop After File")
+        self.stop.setToolTip("Finish the current file, then stop before processing the next one.")
         self.stop.setEnabled(False)
         self.start = QPushButton("Transcribe")
         self.start.setDefault(True)
         status_row = QHBoxLayout()
         for status_widget in (self.progress, self.report_mode, self.review_before_running):
             status_row.addWidget(status_widget)
-        panel.addLayout(status_row)
+        footer = QWidget()
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.addLayout(status_row)
         for widget in (self.preview, self.preview_content_button, self.stop, self.start):
             bottom.addWidget(widget)
-        panel.addLayout(bottom)
+        footer_layout.addLayout(bottom)
+        outer.addWidget(footer, 1, 1)
 
         self.setCentralWidget(root)
         self.add_files.clicked.connect(self.select_files)
@@ -787,15 +1059,39 @@ class MainWindow(QMainWindow):
         self.fail_fast.setChecked(controls.fail_fast)
         self.review_before_running.setChecked(controls.review)
         self.restore_option_preferences()
+        self.output_directory.textChanged.connect(self.update_output_warning)
+        self.output_subfolder.toggled.connect(self.update_output_warning)
+        self.recursive.toggled.connect(self.update_output_warning)
+        self.filter_kind.currentIndexChanged.connect(self.update_output_warning)
+        self.pattern.textChanged.connect(self.update_output_warning)
+        self.update_output_warning()
         for line_field in self.findChildren(QLineEdit):
             line_field.textChanged.connect(self.invalidate_preview)
         for text_field in self.findChildren(QPlainTextEdit):
+            text_field.setTabChangesFocus(True)
             if text_field is not self.details:
                 text_field.textChanged.connect(self.invalidate_preview)
         for combo_field in self.findChildren(QComboBox):
             combo_field.currentIndexChanged.connect(self.invalidate_preview)
         for checkbox_field in self.findChildren(QCheckBox):
             checkbox_field.toggled.connect(self.invalidate_preview)
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        app.focusChanged.connect(self.schedule_focused_control_reveal)
+
+    def schedule_focused_control_reveal(self, _previous: QWidget | None, current: QWidget | None) -> None:
+        if current is not None and self.main_scroll.isAncestorOf(current):
+            QTimer.singleShot(0, self.reveal_focused_control)
+
+    def reveal_focused_control(self) -> None:
+        focused = QApplication.focusWidget()
+        if focused is None or not self.isVisible() or not self.main_scroll.isAncestorOf(focused):
+            return
+        parent = focused.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                parent.ensureWidgetVisible(focused, 8, 8)
+            parent = parent.parentWidget()
 
     def preference_controls(self) -> dict[str, QWidget]:
         controls: dict[str, QWidget] = {"mode": self.mode, "report_mode": self.report_mode}
@@ -899,6 +1195,7 @@ class MainWindow(QMainWindow):
         self.refresh_profiles()
         self.apply_shared_controls(workflows.get(self.active_workflow, WorkflowControls()))
         self.apply_option_preferences(preset["options"])
+        self.update_output_warning()
         self.details.setPlainText(f"Preset loaded: {name}")
 
     def reset_preferences(self) -> None:
@@ -913,6 +1210,7 @@ class MainWindow(QMainWindow):
         self.apply_shared_controls(WorkflowControls())
         self.apply_option_preferences(self.default_options)
         self.transcription_options.env_file.clear()
+        self.update_output_warning()
         self.details.setPlainText("Settings reset to defaults. Saved presets are unchanged.")
 
     def prompt_save_preset(self) -> None:
@@ -966,7 +1264,9 @@ class MainWindow(QMainWindow):
             "Using the Toolkit",
             "Choose a workflow, then add files or folders using the buttons or drag and drop. "
             "Use Preview to check destinations and planned API requests before running.\n\n"
-            "Leave the output folder blank to save beside the sources. Transcribe saves JSON by default. "
+            "By default, files are saved in an Output subfolder beside each source. "
+            "Clear Use Output subfolder to choose another folder or save beside the source. "
+            "Transcribe saves JSON by default. "
             "Use Export to render saved JSON offline. Configuration displays the active project settings.",
         )
 
@@ -1015,6 +1315,7 @@ class MainWindow(QMainWindow):
             self.project_label.setText(name)
             self.refresh_profiles()
             self.invalidate_preview()
+            self.update_output_warning()
             if self.active_workflow == 5:
                 self.show_configuration()
 
@@ -1072,10 +1373,19 @@ class MainWindow(QMainWindow):
             profile_settings, sources = configuration_sources(
                 settings.profile, overrides=overrides, cwd=settings.project_directory
             )
+            effective = settings.configuration(clean=clean)
+            if (
+                self.active_workflow == 2
+                and ArtifactFormat.CLEAN_JSON in self.selected_formats()
+                and effective["text"]["cleanup"] is None
+                and settings.cleanup != "none"
+            ):
+                effective["text"]["cleanup"] = "uzbek"
+                sources["text.cleanup"] = "automatic for cleaned JSON export"
             self.details.setPlainText(
                 json.dumps(
                     {
-                        "effective": settings.configuration(clean=clean),
+                        "effective": effective,
                         "profile_settings": profile_settings,
                         "gui_overrides": overrides,
                         "setting_sources": sources,
@@ -1122,6 +1432,7 @@ class MainWindow(QMainWindow):
         self.paths = list(self.workflow_paths.get(row, []))
         self.file_list.clear()
         self.file_list.addItems([str(path) for path in self.paths])
+        self.update_output_warning()
         self.options.setCurrentIndex(row)
         headings = (
             "Transcribe audio or video to reusable JSON",
@@ -1136,7 +1447,7 @@ class MainWindow(QMainWindow):
         self.formats.setText(
             "JSON is always saved · API charges may apply"
             if row == 0
-            else "Offline · Outputs beside source files"
+            else "Offline · Choose where to save outputs"
             if row < 4
             else "Read-only"
         )
@@ -1211,6 +1522,30 @@ class MainWindow(QMainWindow):
         self.details.setPlainText(f"{len(self.paths)} file(s) or folder(s) selected")
         if changed:
             self.invalidate_preview()
+        self.update_output_warning()
+
+    def update_output_warning(self, *_args: object) -> None:
+        self.output_warning.clear()
+        self.output_warning.hide()
+        folder = self.output_directory.text().strip()
+        if not folder or self.output_subfolder.isChecked():
+            return
+        try:
+            output = (self.project_directory / Path(folder).expanduser()).resolve()
+            glob = self.pattern.text() if self.filter_kind.currentIndex() == 1 else ""
+            scans_subfolders = self.recursive.isChecked() or any(value in glob for value in ("/", "\\", "**"))
+            if any(
+                path.is_dir()
+                and (output == path.resolve() or (scans_subfolders and output.is_relative_to(path.resolve())))
+                for path in self.paths
+            ):
+                self.output_warning.setText(
+                    "Folder scans can include existing outputs in the chosen output folder. "
+                    "Choose a folder outside the input tree to avoid reprocessing."
+                )
+                self.output_warning.show()
+        except (OSError, RuntimeError, ValueError):
+            return
 
     def select_output_directory(self) -> None:
         name = QFileDialog.getExistingDirectory(
@@ -1253,6 +1588,7 @@ class MainWindow(QMainWindow):
             self.paths.pop(index)
         if indices:
             self.invalidate_preview()
+            self.update_output_warning()
 
     def clear_files(self) -> None:
         had_paths = bool(self.paths)
@@ -1260,6 +1596,7 @@ class MainWindow(QMainWindow):
         self.file_list.clear()
         if had_paths:
             self.invalidate_preview()
+            self.update_output_warning()
 
     def invalidate_preview(self, *_args: object) -> None:
         if not self.preview_valid:
@@ -1298,6 +1635,21 @@ class MainWindow(QMainWindow):
             if self.pattern_error.text():
                 self.pattern.setFocus()
                 raise ValueError(self.pattern_error.text())
+            if (
+                self.active_workflow == 2
+                and self.export_formats[ArtifactFormat.CLEAN_JSON].isChecked()
+                and self.export_text.cleanup.currentData() == "none"
+            ):
+                message = "Cleaned JSON requires cleanup; choose the profile default or Uzbek editorial cleanup."
+                self.export_text.cleanup_error.setText(message)
+                self.export_text.cleanup.setFocus()
+                raise ValueError(message)
+            if self.active_workflow == 2 and ArtifactFormat.COMBINED_TXT in self.selected_formats():
+                if not self.export_text.validate_combined_name():
+                    if self.export_text.advanced_section is not None:
+                        self.export_text.advanced_section.toggle.setChecked(True)
+                    self.export_text.combined_name.setFocus()
+                    raise ValueError(f"Combined text filename: {self.export_text.combined_name_error.text()}")
             settings = self.desktop_settings()
             kind = self.filter_kind.currentIndex()
             pattern = self.pattern.text()
@@ -1308,7 +1660,12 @@ class MainWindow(QMainWindow):
                 recursive=self.recursive.isChecked(),
             )
         except Exception as exc:
-            self.details.setPlainText(f"Preflight failed: {exc}")
+            message = (
+                json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False, indent=2)
+                if self.report_mode.currentText() == "JSON"
+                else f"Preflight failed: {exc}"
+            )
+            self.details.setPlainText(message)
             return
         action = ("Transcribe", "Convert Script", "Export", "Clean", "Inspect")[self.active_workflow]
         mode = ScriptMode(self.mode.currentText().lower())
@@ -1347,6 +1704,12 @@ class MainWindow(QMainWindow):
         if not self.start.isEnabled() or not self.failed_items or self.retry_context is None:
             return
         action, mode, formats, settings = self.retry_context
+        if action == "Transcribe":
+            credentials = self.transcription_options.env_file.text().strip()
+            settings = replace_settings(
+                settings,
+                env_file=settings.project_directory / Path(credentials).expanduser() if credentials else None,
+            )
         items = tuple(self.failed_items)
         if self.retry_table_snapshot is not None:
             self.restore_batch_table(self.retry_table_snapshot)
@@ -1419,6 +1782,9 @@ class MainWindow(QMainWindow):
                 error = "Another output in this batch has a conflict."
             for column, value in enumerate((row["source"], "\n".join(row["outputs"]), status, error)):
                 self.batch_table.setItem(index, column, QTableWidgetItem(value))
+            output_item = self.batch_table.item(index, 1)
+            if output_item is not None:
+                output_item.setData(Qt.ItemDataRole.UserRole, row["outputs"])
             source_item = self.batch_table.item(index, 0)
             if source_item is not None:
                 source_item.setData(Qt.ItemDataRole.UserRole, row["operation"])
@@ -1453,6 +1819,9 @@ class MainWindow(QMainWindow):
             source_item = self.batch_table.item(index, 0)
             if source_item is not None:
                 source_item.setData(Qt.ItemDataRole.UserRole, row["operation"])
+            output_item = self.batch_table.item(index, 1)
+            if output_item is not None:
+                output_item.setData(Qt.ItemDataRole.UserRole, row["outputs"])
             self.batch_table.setItem(index, 2, QTableWidgetItem("Pending"))
             self.batch_table.setItem(index, 3, QTableWidgetItem(""))
 
@@ -1499,15 +1868,21 @@ class MainWindow(QMainWindow):
 
     def open_output_folder(self) -> None:
         selected = self.batch_table.selectedItems()
-        if not selected:
-            self.details.setPlainText("Select a batch row to open its output folder.")
-            return
-        item = self.batch_table.item(selected[0].row(), 1)
-        targets = item.text().splitlines() if item else []
-        if not targets:
+        rows = [selected[0].row()] if selected else range(self.batch_table.rowCount())
+        folders = {
+            Path(target).parent
+            for row in rows
+            if (item := self.batch_table.item(row, 1)) is not None
+            for target in (item.data(Qt.ItemDataRole.UserRole) or [])
+            if target
+        }
+        if not folders:
             self.details.setPlainText("This input has no output folder.")
             return
-        folder = Path(targets[0]).parent
+        if len(folders) != 1:
+            self.details.setPlainText("Select a batch row to choose which output folder to open.")
+            return
+        folder = next(iter(folders))
         if not folder.is_dir():
             self.details.setPlainText(f"Output folder does not exist yet: {folder}")
         elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
@@ -1617,11 +1992,30 @@ def self_test() -> int:
             app.processEvents()
         window.navigation.setCurrentRow(1)
         window.add_paths([source])
+        output = source.resolve().parent / "Output" / "sample CYR.srt"
+        window.report_mode.setCurrentText("JSON")
+        window.launch_worker(preview_only=True, content_preview=True)
+        if not window.worker.wait(10000):
+            raise RuntimeError("Desktop self-test timed out during preview")
+        app.processEvents()
+        try:
+            preview = json.loads(window.details.toPlainText())
+        except (TypeError, ValueError) as exc:
+            window.close()
+            raise RuntimeError("Desktop self-test preview was not valid JSON") from exc
+        if (
+            preview.get("status") != "planned"
+            or preview.get("target") != str(output)
+            or "Салом" not in preview.get("content", "")
+            or output.exists()
+            or source.read_text(encoding="utf-8") != original
+        ):
+            window.close()
+            raise RuntimeError("Desktop self-test preview produced an unexpected result")
         window.start_job()
         if not window.worker.wait(10000):
             raise RuntimeError("Desktop self-test timed out during conversion")
         app.processEvents()
-        output = source.parent / "sample CYR.srt"
         if source.read_text(encoding="utf-8") != original or "Салом" not in output.read_text(encoding="utf-8"):
             raise RuntimeError("Desktop self-test conversion produced an unexpected result")
         window.close()

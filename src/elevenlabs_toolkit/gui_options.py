@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from .application.desktop import DesktopSettings
 from .cli.transcribe import LOCAL_FORMATS, REMOTE_FORMATS
-from .config import available_profiles
+from .config import ConfigurationError, available_profiles
 from .languages.replacements import replacement_parts
 from .models import ArtifactFormat, ScriptMode, TranscriptionOptions
 
@@ -73,6 +73,7 @@ class TextOptionsPanel(QWidget):
         super().__init__()
         self.clean = clean
         self.numeric_errors: dict[str, QLabel] = {}
+        self.cross_errors: dict[str, QLabel] = {}
         self.numeric_inputs: dict[str, QLineEdit] = {}
         self.numeric_labels: dict[str, str] = {}
         layout = QFormLayout(self)
@@ -89,8 +90,18 @@ class TextOptionsPanel(QWidget):
         self.cleanup.addItem("Profile default", None)
         self.cleanup.addItem("None", "none")
         self.cleanup.addItem("Uzbek editorial cleanup", "uzbek")
+        self.cleanup_error = QLabel()
+        self.cleanup_error.setStyleSheet("color: #b00020")
+        self.cleanup_error.setWordWrap(True)
+        self.cleanup.currentIndexChanged.connect(self.cleanup_error.clear)
         if not clean:
-            layout.addRow("Cleanup", self.cleanup)
+            cleanup_container = QWidget()
+            cleanup_layout = QVBoxLayout(cleanup_container)
+            cleanup_layout.setContentsMargins(0, 0, 0, 0)
+            cleanup_layout.setSpacing(0)
+            cleanup_layout.addWidget(self.cleanup)
+            cleanup_layout.addWidget(self.cleanup_error)
+            layout.addRow("Cleanup", cleanup_container)
         self.override_replacements = QCheckBox("Override profile replacements")
         layout.addRow(self.override_replacements)
         self.replacements = QPlainTextEdit()
@@ -117,8 +128,17 @@ class TextOptionsPanel(QWidget):
         self.smart = QCheckBox("Balance subtitle lines")
         self.marker_fps = QLineEdit("25")
         self.marker_color = QLineEdit("ResolveColorBlue")
+        self.marker_color.setToolTip("DaVinci Resolve marker colour name, such as ResolveColorBlue.")
+        self.marker_color_error = QLabel()
+        self.marker_color_error.setStyleSheet("color: #b00020")
+        self.marker_color_error.setWordWrap(True)
         self.marker_prefix = QLineEdit("Sentence")
+        self.marker_prefix.setToolTip("Text placed before each Resolve marker number.")
         self.combined_name = QLineEdit("combined.txt")
+        self.combined_name.setToolTip("Filename for combined text output; enter a name without a folder path.")
+        self.combined_name_error = QLabel()
+        self.combined_name_error.setStyleSheet("color: #b00020")
+        self.combined_name_error.setWordWrap(True)
         self.advanced_section: CollapsibleSection | None = None
         if advanced:
             self.advanced_section = CollapsibleSection("Advanced subtitle and Resolve settings")
@@ -150,6 +170,19 @@ class TextOptionsPanel(QWidget):
                     minimum=0,
                     exclusive_minimum=not allow_zero,
                 )
+            for name in ("min_duration", "max_duration", "gap_seconds", "hard_gap_seconds"):
+                error = QLabel()
+                error.setStyleSheet("color: #b00020")
+                error.setWordWrap(True)
+                parent = self.numeric_errors[name].parentWidget()
+                assert parent is not None
+                field_layout = parent.layout()
+                assert field_layout is not None
+                field_layout.addWidget(error)
+                self.cross_errors[name] = error
+            for name in ("min_duration", "max_duration", "gap_seconds", "hard_gap_seconds"):
+                self.numeric_fields[name][0].textChanged.connect(self.validate_numeric_relationships)
+            self.profile.currentTextChanged.connect(self.validate_numeric_relationships)
             for name, label in (
                 ("pause_detection", "Pause detection"),
                 ("split_on_speaker_change", "Split on speaker change"),
@@ -170,9 +203,23 @@ class TextOptionsPanel(QWidget):
                 minimum=0,
                 exclusive_minimum=True,
             )
-            advanced_layout.addRow("Resolve marker colour", self.marker_color)
+            marker_color_container = QWidget()
+            marker_color_layout = QVBoxLayout(marker_color_container)
+            marker_color_layout.setContentsMargins(0, 0, 0, 0)
+            marker_color_layout.setSpacing(0)
+            marker_color_layout.addWidget(self.marker_color)
+            marker_color_layout.addWidget(self.marker_color_error)
+            self.marker_color.textChanged.connect(self.validate_marker_color)
+            advanced_layout.addRow("Resolve marker colour", marker_color_container)
             advanced_layout.addRow("Resolve marker prefix", self.marker_prefix)
-            advanced_layout.addRow("Combined text filename", self.combined_name)
+            combined_container = QWidget()
+            combined_layout = QVBoxLayout(combined_container)
+            combined_layout.setContentsMargins(0, 0, 0, 0)
+            combined_layout.setSpacing(0)
+            combined_layout.addWidget(self.combined_name)
+            combined_layout.addWidget(self.combined_name_error)
+            self.combined_name.textChanged.connect(self.recheck_combined_name)
+            advanced_layout.addRow("Combined text filename", combined_container)
             layout.addRow(self.advanced_section)
 
     def add_numeric_field(
@@ -250,6 +297,31 @@ class TextOptionsPanel(QWidget):
                     self.advanced_section.toggle.setChecked(True)
                 self.numeric_inputs[name].setFocus()
                 raise ValueError(f"{self.numeric_labels[name]}: {error.text()}")
+        self.validate_numeric_relationships()
+        for name, error in self.cross_errors.items():
+            if error.text():
+                if self.advanced_section is not None:
+                    self.advanced_section.toggle.setChecked(True)
+                self.numeric_inputs[name].setFocus()
+                raise ValueError(f"{self.numeric_labels[name]}: {error.text()}")
+
+    def validate_numeric_relationships(self, *_args: object) -> None:
+        pairs = (
+            ("min_duration", "max_duration", "Minimum duration must not exceed maximum duration."),
+            ("gap_seconds", "hard_gap_seconds", "Pause gap must not exceed hard pause gap."),
+        )
+        for lower, upper, message in pairs:
+            if lower not in self.cross_errors:
+                continue
+            error = self.cross_errors[lower]
+            error.clear()
+            self.cross_errors[upper].clear()
+            low_text = self.numeric_inputs[lower].text().strip()
+            high_text = self.numeric_inputs[upper].text().strip()
+            if not low_text or not high_text or self.numeric_errors[lower].text() or self.numeric_errors[upper].text():
+                continue
+            if float(low_text) > float(high_text):
+                error.setText(message)
 
     def refresh_profiles(self, directory: Path) -> None:
         selected = self.profile.currentText()
@@ -281,8 +353,33 @@ class TextOptionsPanel(QWidget):
         controls.update({f"boolean.{key}": field for key, field in self.boolean_fields.items()})
         return controls
 
+    def validate_marker_color(self) -> None:
+        self.marker_color_error.setText("Enter a marker colour." if not self.marker_color.text().strip() else "")
+
+    def recheck_combined_name(self) -> None:
+        if self.combined_name_error.text():
+            self.validate_combined_name()
+
+    def validate_combined_name(self) -> bool:
+        from .application.planner import PlanningError, validate_combined_name
+
+        try:
+            validate_combined_name(self.combined_name.text())
+        except PlanningError:
+            self.combined_name_error.setText("Enter a valid filename without a folder path.")
+            return False
+        self.combined_name_error.clear()
+        return True
+
     def settings(self, directory: Path) -> DesktopSettings:
         self.validate_numeric_fields()
+        if self.advanced:
+            self.validate_marker_color()
+            if self.marker_color_error.text():
+                if self.advanced_section is not None:
+                    self.advanced_section.toggle.setChecked(True)
+                self.marker_color.setFocus()
+                raise ValueError(f"Resolve marker colour: {self.marker_color_error.text()}")
         self.validate_replacements()
         if self.replacement_error.text():
             self.replacements.setFocus()
@@ -302,7 +399,7 @@ class TextOptionsPanel(QWidget):
         for name, choice in self.boolean_fields.items():
             if choice.currentData() is not None:
                 segmentation.append((name, choice.currentData()))
-        return DesktopSettings(
+        settings = DesktopSettings(
             segmentation=tuple(segmentation),
             smart_line_breaks=self.smart.isChecked(),
             marker_fps=float(self.marker_fps.text()),
@@ -315,6 +412,36 @@ class TextOptionsPanel(QWidget):
             replacements=replacements,
             cleanup="uzbek" if self.clean else self.cleanup.currentData(),
         )
+        relationship_fields = {"min_duration", "max_duration", "gap_seconds", "hard_gap_seconds"}
+        if self.advanced and any(name in relationship_fields for name, _ in segmentation):
+            try:
+                settings.configuration(clean=self.clean)
+            except ConfigurationError as exc:
+                text = str(exc)
+                relationships = (
+                    (
+                        "min_duration must be <= max_duration",
+                        "min_duration",
+                        "max_duration",
+                        "Minimum duration must not exceed maximum duration.",
+                    ),
+                    (
+                        "hard_gap_seconds must be >= gap_seconds",
+                        "gap_seconds",
+                        "hard_gap_seconds",
+                        "Pause gap must not exceed hard pause gap.",
+                    ),
+                )
+                for marker, lower, upper, message in relationships:
+                    if marker in text:
+                        field_name = lower if self.numeric_inputs[lower].text().strip() else upper
+                        self.cross_errors[field_name].setText(message + " Check the selected profile's value.")
+                        if self.advanced_section is not None:
+                            self.advanced_section.toggle.setChecked(True)
+                        self.numeric_inputs[field_name].setFocus()
+                        raise ValueError(self.cross_errors[field_name].text()) from exc
+                raise
+        return settings
 
 
 class TranscriptionPanel(TextOptionsPanel):
@@ -342,7 +469,8 @@ class TranscriptionPanel(TextOptionsPanel):
         self.model_error = QLabel()
         self.keyterms_error = QLabel()
         self.verbatim_error = QLabel()
-        for error in (self.model_error, self.keyterms_error, self.verbatim_error):
+        self.timestamps_error = QLabel()
+        for error in (self.model_error, self.keyterms_error, self.verbatim_error, self.timestamps_error):
             error.setStyleSheet("color: #b00020")
             error.setWordWrap(True)
 
@@ -356,11 +484,15 @@ class TranscriptionPanel(TextOptionsPanel):
             return container
 
         model_control = with_error(self.model, self.model_error)
+        timestamps_control = with_error(self.timestamps, self.timestamps_error)
         keyterms_control = with_error(self.keyterms, self.keyterms_error)
         verbatim_control = with_error(self.no_verbatim, self.verbatim_error)
         self.model.textChanged.connect(self.validate_transcription_text)
         self.keyterms.textChanged.connect(self.validate_transcription_text)
         self.no_verbatim.toggled.connect(self.validate_transcription_text)
+        self.timestamps.currentIndexChanged.connect(self.timestamps_error.clear)
+        self.profile.currentTextChanged.connect(self.timestamps_error.clear)
+        self.boolean_fields["pause_detection"].currentIndexChanged.connect(self.timestamps_error.clear)
         self.env_file = QLineEdit()
         self.env_file.setPlaceholderText("Project .env")
         self.env_file.setToolTip(
@@ -380,7 +512,7 @@ class TranscriptionPanel(TextOptionsPanel):
         for label, control in (
             ("Model", model_control),
             ("Language code", self.language),
-            ("Timestamps", self.timestamps),
+            ("Timestamps", timestamps_control),
             ("Speaker count", self.num_speakers),
             ("Seed", self.seed),
             ("Temperature", self.temperature),
@@ -426,6 +558,7 @@ class TranscriptionPanel(TextOptionsPanel):
         self.remote_formats = {value: QCheckBox(value.upper()) for value in REMOTE_FORMATS}
         for value, checkbox in self.local_formats.items():
             checkbox.setToolTip(FORMAT_DESCRIPTIONS[value][1] + " Rendered locally from the transcription response.")
+            checkbox.toggled.connect(self.timestamps_error.clear)
             form.addRow("Local output", checkbox)
         for checkbox in self.remote_formats.values():
             checkbox.setToolTip("Requested from ElevenLabs during transcription; a new request may incur charges.")
@@ -494,7 +627,7 @@ class TranscriptionPanel(TextOptionsPanel):
                 control.setFocus()
                 raise ValueError(error.text())
         env_file = self.env_file.text().strip()
-        return replace(
+        settings = replace(
             super().settings(directory),
             transcription=TranscriptionOptions(
                 model_id=self.model.text(),
@@ -515,3 +648,20 @@ class TranscriptionPanel(TextOptionsPanel):
             retry_backoff=float(self.backoff.text()),
             request_delay=float(self.delay.text()),
         )
+        timestamps = settings.transcription.timestamps_granularity
+        timed_formats = {
+            ArtifactFormat.SRT,
+            ArtifactFormat.SRT_MINI,
+            ArtifactFormat.RESOLVE_EDL,
+            ArtifactFormat.CUE_INDEX_SRT,
+        }
+        message = ""
+        if timestamps == "none" and any(value in timed_formats for value in settings.additional_formats):
+            message = "Timed outputs require word or character timestamps."
+        elif timestamps != "character" and settings.configuration()["segmentation"]["pause_detection"]:
+            message = "Pause detection requires character timestamps."
+        self.timestamps_error.setText(message)
+        if message:
+            self.timestamps.setFocus()
+            raise ValueError(message)
+        return settings

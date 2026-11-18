@@ -29,6 +29,40 @@ def test_worker_reports_planned_outputs_and_per_file_failures(tmp_path: Path) ->
     assert next(row for row in results if row["source"] == str(bad))["error"]
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_json_content_preview_is_machine_readable_and_read_only(tmp_path: Path, existing: bool) -> None:
+    source = tmp_path / "sample.srt"
+    original = "1\n00:00:00,000 --> 00:00:01,000\nSalom\n"
+    source.write_text(original, encoding="utf-8")
+    target = tmp_path / "sample CYR.srt"
+    if existing:
+        target.write_text("existing", encoding="utf-8")
+    worker = Worker(
+        "Convert Script",
+        ScriptMode.CYRILLIC,
+        [source],
+        False,
+        policy=ConflictPolicy.SKIP,
+        preview_only=True,
+        content_preview=True,
+        report_mode="JSON",
+    )
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    preview = json.loads(messages[0])
+    assert preview["status"] == "planned"
+    assert preview["source"] == str(source)
+    assert preview["target"] == str(target)
+    assert "Салом" in preview["content"]
+    assert preview["truncated"] is False
+    assert ("skipped" in preview["warning"].lower()) is existing
+    assert source.read_text(encoding="utf-8") == original
+    assert target.exists() is existing
+    if existing:
+        assert target.read_text(encoding="utf-8") == "existing"
+
+
 def test_conversion_content_preview_is_read_only(tmp_path: Path) -> None:
     source = tmp_path / "sample.srt"
     original = "1\n00:00:00,000 --> 00:00:01,000\nSalom\n"
@@ -41,6 +75,32 @@ def test_conversion_content_preview_is_read_only(tmp_path: Path) -> None:
     assert "00:00:00,000" in messages[0]
     assert source.read_text(encoding="utf-8") == original
     assert sorted(p.name for p in tmp_path.iterdir()) == ["sample.srt"]
+
+
+def test_json_content_preview_reports_truncation_and_conflict(tmp_path: Path) -> None:
+    source = tmp_path / "sample.txt"
+    source.write_text("Salom " * 3000, encoding="utf-8")
+    target = tmp_path / "sample CYR.txt"
+    target.write_text("existing", encoding="utf-8")
+    worker = Worker(
+        "Convert Script",
+        ScriptMode.CYRILLIC,
+        [source],
+        False,
+        policy=ConflictPolicy.ERROR,
+        preview_only=True,
+        content_preview=True,
+        report_mode="JSON",
+    )
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    preview = json.loads(messages[0])
+    assert preview["status"] == "conflict"
+    assert preview["truncated"] is True
+    assert len(preview["content"]) == 12000
+    assert "conflict" in preview["warning"].lower()
+    assert target.read_text(encoding="utf-8") == "existing"
 
 
 @pytest.mark.parametrize("policy", [ConflictPolicy.SKIP, ConflictPolicy.REPLACE])
@@ -94,6 +154,72 @@ def test_export_content_preview_matches_written_output(
     execute.run()
     assert messages[0].split("\n\n", 1)[1] == (tmp_path / filename).read_text(encoding="utf-8")
     assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("artifact_format", [ArtifactFormat.SRT, ArtifactFormat.RESOLVE_EDL])
+def test_json_export_content_preview_handles_supported_and_unavailable_formats(
+    tmp_path: Path, artifact_format: ArtifactFormat
+) -> None:
+    source = tmp_path / "input.json"
+    source.write_text(
+        json.dumps({"language_code": "uz", "text": "Salom", "words": [{"text": "Salom", "start": 0, "end": 1}]}),
+        encoding="utf-8",
+    )
+    original = source.read_bytes()
+    worker = Worker(
+        "Export",
+        ScriptMode.SOURCE,
+        [source],
+        False,
+        (artifact_format,),
+        DesktopSettings(project_directory=tmp_path),
+        preview_only=True,
+        content_preview=True,
+        report_mode="JSON",
+    )
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    preview = json.loads(messages[0])
+    if artifact_format is ArtifactFormat.SRT:
+        assert preview["status"] == "planned"
+        assert "Salom" in preview["content"]
+    else:
+        assert preview["status"] == "unavailable"
+        assert "preview" in preview["message"].lower()
+    assert source.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [source]
+
+
+@pytest.mark.parametrize("report_mode", ["Standard", "JSON"])
+def test_unavailable_content_preview_still_reports_output_conflict(tmp_path: Path, report_mode: str) -> None:
+    source = tmp_path / "input.json"
+    source.write_text(json.dumps({"text": "Salom"}), encoding="utf-8")
+    target = tmp_path / "input.resolve.edl"
+    target.write_text("existing", encoding="utf-8")
+    worker = Worker(
+        "Export",
+        ScriptMode.SOURCE,
+        [source],
+        False,
+        (ArtifactFormat.RESOLVE_EDL,),
+        DesktopSettings(project_directory=tmp_path),
+        policy=ConflictPolicy.ERROR,
+        preview_only=True,
+        content_preview=True,
+        report_mode=report_mode,
+    )
+    messages = []
+    worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert "conflict" in messages[0].lower()
+    assert "preview" in messages[0].lower()
+    assert str(target) in messages[0]
+    if report_mode == "JSON":
+        preview = json.loads(messages[0])
+        assert preview["status"] == "conflict"
+        assert preview["conflicts"][0]["target"] == str(target)
+    assert target.read_text(encoding="utf-8") == "existing"
 
 
 def test_folder_conversion_includes_legacy_script_suffix(tmp_path: Path) -> None:
@@ -159,8 +285,8 @@ def test_conversion_continues_after_bad_input_and_preserves_source(tmp_path: Pat
     messages = []
     worker.finished_result.connect(messages.append, Qt.ConnectionType.DirectConnection)
     worker.run()
-    assert good.read_text() == "Salom"
-    assert (tmp_path / "good CYR.txt").read_text() == "Салом"
+    assert good.read_text(encoding="utf-8") == "Salom"
+    assert (tmp_path / "good CYR.txt").read_text(encoding="utf-8") == "Салом"
     assert "FAILED" in messages[0]
 
 
