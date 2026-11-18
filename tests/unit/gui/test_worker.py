@@ -214,11 +214,12 @@ def test_unavailable_content_preview_still_reports_output_conflict(tmp_path: Pat
     worker.run()
     assert "conflict" in messages[0].lower()
     assert "preview" in messages[0].lower()
-    assert str(target) in messages[0]
     if report_mode == "JSON":
         preview = json.loads(messages[0])
         assert preview["status"] == "conflict"
         assert preview["conflicts"][0]["target"] == str(target)
+    else:
+        assert str(target) in messages[0]
     assert target.read_text(encoding="utf-8") == "existing"
 
 

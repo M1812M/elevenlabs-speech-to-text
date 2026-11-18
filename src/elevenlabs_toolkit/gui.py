@@ -1090,7 +1090,10 @@ class MainWindow(QMainWindow):
         parent = focused.parentWidget()
         while parent is not None:
             if isinstance(parent, QScrollArea):
-                parent.ensureWidgetVisible(focused, 8, 8)
+                content = parent.widget()
+                if content is not None:
+                    center = focused.mapTo(content, focused.rect().center())
+                    parent.ensureVisible(center.x(), center.y(), 8, 8)
             parent = parent.parentWidget()
 
     def preference_controls(self) -> dict[str, QWidget]:

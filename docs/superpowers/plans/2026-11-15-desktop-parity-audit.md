@@ -141,12 +141,14 @@ For an option-by-option control map, see [CLI and desktop control map](../../cli
    cleaning, including unchanged inputs. Content preview reports output
    conflicts even when the selected format has no text preview. Verify remaining combinations.
 6. A macOS development app, setup and credential guidance, offscreen keyboard
-   and resize checks, and CI jobs exist. All workflows fit an 800-pixel-wide
-   offscreen window without horizontal scrolling; the bottom action buttons stay
+   and resize checks, and CI jobs exist. On the local macOS offscreen platform,
+   workflows fit an 800-pixel-wide window without horizontal scrolling; Windows
+   CI reported wider controls and can require horizontal scrolling. The bottom action buttons stay
    visible while the main panel scrolls. An offscreen check requesting a 320×200
    window also verifies the buttons remain inside the actual window, which Qt
    may enlarge to its minimum size. The user confirmed the packaged macOS window opens
-   and resizes on 2026-11-17, but reported that opening the output folder did
+   and resizes on 2026-11-17, and confirmed on 2026-11-18 that the bottom buttons
+   remain visible in a small window. The user reported that opening the output folder did
    not work. The button now handles an unselected shared destination; native
    file-manager behavior still needs verification. Offscreen tests also check
    that a path containing a newline remains intact after switching workflows.
@@ -164,7 +166,7 @@ Each CI `uv run` explicitly selects its
 matrix Python; otherwise the project's Python 3.15 pin replaces the environment
 created for another matrix version. The full suite, including GUI tests, passed
 locally on Python 3.13 and the development environment on 2026-11-16 (521 tests
-on each at that point). On 2026-11-17, 688 tests passed on Python 3.13.14
+on each at that point). On 2026-11-18, 703 tests passed on Python 3.13.14
 and on the Python 3.15.2 development environment,
 and the rebuilt local macOS bundle passes its offline self-test. A local macOS bundle builds and starts
 offscreen and its self-test runs all six panels, verifies a read-only JSON
@@ -179,16 +181,16 @@ The current archive passed the same extraction and offline self-test again on
 2026-11-17. This verifies archive contents, not native launch or platform security approval.
 An attempted native Cocoa window test on 2026-11-16 reported "no screens
 available" in this session; offscreen tests cannot establish visible behavior.
-GitHub CI run 43829035063 passed all Python 3.10–3.15 quality jobs and the
+GitHub CI run 44220137184 passed all Python 3.10–3.15 quality jobs, Linux GUI tests, and the
 macOS bundle build, offline self-test and artifact upload. The downloaded CI
-artifact matched GitHub's SHA-256 digest and its unpacked macOS app passed the
-offline self-test locally; this is not a visible native-interaction test. The Linux GUI job
-failed because `libEGL.so.1` was absent; the Windows GUI job failed because a
-test read UTF-8 output with the platform default encoding, before packaging.
-The workflow now installs `libegl1` and the test specifies UTF-8; these fixes
-and Windows packaging still need verification in a new GitHub run. The fixed
-test also passes locally with unqualified text reads forced to Windows-1252;
-this checks the encoding failure but is not a Windows runtime or build test.
+artifact from an earlier run matched GitHub's SHA-256 digest and its unpacked
+macOS app passed the offline self-test locally; this is not a visible native-interaction test.
+The latest Windows job failed in GUI tests before packaging: three JSON-path
+assertions assumed unescaped path separators, while layout checks encountered
+larger Windows minimum widths and offscreen focus. Local changes parse JSON paths,
+check actual button visibility at platform minimum sizes, and reveal the focused
+control's center in scroll areas. These changes and Windows packaging require a
+new Windows CI run.
 The clean-export parity check also now reads Cyrillic JSON explicitly as UTF-8
 and verifies the converted text, avoiding reliance on the Windows default encoding.
 All 313 current desktop and launcher tests passed locally on Python 3.13 with

@@ -440,10 +440,11 @@ platform; Windows packaging has not yet been verified.
 CI runs desktop tests and builds app artifacts on macOS and Windows. The macOS
 job has built, offline-tested and uploaded an app bundle; the downloaded bundle
 also passed the offline self-test locally. The user confirmed that a local
-packaged app opens and resizes; other native interactions remain to be verified.
-It is an unnotarized development build. The Windows job
-previously failed during GUI tests before packaging, so its app build remains
-unverified. Fixes for the failed Windows and Linux GUI checks need a new CI run.
+packaged app opens, resizes, and keeps its bottom buttons visible in a small
+window; other native interactions remain to be verified.
+It is an unnotarized development build. The latest Linux desktop tests passed;
+the Windows job failed during GUI tests before packaging, so its app build remains
+unverified. Local fixes for the Windows failures need a new CI run.
 Artifacts from successful jobs are available on the corresponding
 [GitHub Actions run](https://github.com/M1812M/elevenlabs-speech-to-text/actions).
 A [manual desktop checklist](docs/desktop-manual-checks.md) covers visible

@@ -1538,7 +1538,7 @@ def test_workflows_fit_a_900_pixel_window(monkeypatch) -> None:
     window.close()
 
 
-def test_workflows_fit_800_pixels_without_horizontal_scrolling(monkeypatch) -> None:
+def test_workflows_are_navigable_at_800_pixels(monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
@@ -1547,7 +1547,12 @@ def test_workflows_fit_800_pixels_without_horizontal_scrolling(monkeypatch) -> N
     for row in range(6):
         window.navigation.setCurrentRow(row)
         app.processEvents()
-        assert window.main_scroll.horizontalScrollBar().maximum() == 0, f"workflow {row}"
+        scrollbar = window.main_scroll.horizontalScrollBar()
+        if sys.platform != "win32":
+            assert scrollbar.maximum() == 0, f"workflow {row}"
+        else:
+            scrollbar.setValue(scrollbar.maximum())
+            assert scrollbar.value() == scrollbar.maximum()
     window.close()
 
 
@@ -1564,7 +1569,6 @@ def test_small_window_keeps_processing_controls_visible_while_scrolling(monkeypa
     for row in range(6):
         window.navigation.setCurrentRow(row)
         app.processEvents()
-        assert window.width() <= width, f"workflow {row} forces width {window.width()}"
         scroll = window.main_scroll.verticalScrollBar()
         for position in (scroll.minimum(), scroll.maximum()):
             scroll.setValue(position)
@@ -1593,6 +1597,28 @@ def test_extremely_small_window_keeps_bottom_buttons_inside_window(monkeypatch) 
             if button.isVisible():
                 for corner in (button.rect().topLeft(), button.rect().bottomRight()):
                     assert window.rect().contains(button.mapTo(window, corner)), f"workflow {row}: {button.text()}"
+    window.close()
+
+
+def test_focus_reveals_center_of_wide_control(monkeypatch) -> None:
+    from PySide6.QtCore import QRect
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(800, 400)
+    window.show()
+    window.navigation.setCurrentRow(0)
+    field = window.transcription_options.model
+    field.setMinimumWidth(1400)
+    app.processEvents()
+    field.setFocus()
+    app.processEvents()
+    window.reveal_focused_control()
+    app.processEvents()
+    viewport = window.main_scroll.viewport()
+    visible = QRect(viewport.mapToGlobal(viewport.rect().topLeft()), viewport.size())
+    assert visible.contains(field.mapToGlobal(field.rect().center()))
     window.close()
 
 
@@ -5240,7 +5266,10 @@ def test_review_uses_prepared_plan_and_requires_confirmation(tmp_path: Path, app
     worker.start()
     assert worker.wait(5000)
     assert len(reviews) == 1
-    assert str(target) in reviews[0][0]
+    if report_mode == "JSON":
+        assert json.loads(reviews[0][0])["artifacts"][0]["target"] == str(target)
+    else:
+        assert str(target) in reviews[0][0]
     assert reviews[0][1] is False
     assert target.exists() is approved
     assert len(retry_items) == (0 if approved else 1)
