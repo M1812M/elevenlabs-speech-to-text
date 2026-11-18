@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QMainWindow,
@@ -876,6 +877,10 @@ class MainWindow(QMainWindow):
         panel.addLayout(batch_actions)
 
         self.options = QStackedWidget()
+        # Keep the scroll range in sync when an options page grows after layout.
+        options_layout = self.options.layout()
+        assert options_layout is not None  # QStackedWidget creates its own layout.
+        options_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         convert = QWidget()
         convert_layout = QHBoxLayout(convert)
         self.mode = QComboBox()
