@@ -190,7 +190,12 @@ assertions assumed unescaped path separators, while layout checks encountered
 larger Windows minimum widths and offscreen focus. Local changes parse JSON paths,
 check actual button visibility at platform minimum sizes, and reveal the focused
 control's center in scroll areas. These changes and Windows packaging require a
-new Windows CI run.
+new Windows CI run. The subsequent
+[desktop fix branch run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44241772427)
+passed Windows and Linux GUI tests, the Python 3.10–3.15 quality matrix,
+and offline self-tests of both extracted desktop archives. The desktop fix
+and credential changes pass 708 tests locally. The combined changes still
+need a GitHub Actions run.
 The clean-export parity check also now reads Cyrillic JSON explicitly as UTF-8
 and verifies the converted text, avoiding reliance on the Windows default encoding.
 All 313 current desktop and launcher tests passed locally on Python 3.13 with

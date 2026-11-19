@@ -34,13 +34,16 @@ jobs:
         run: uv pip install --python .venv/Scripts/python.exe pyinstaller==6.22.3
       - name: Build Windows application
         run: .venv/Scripts/python.exe scripts/build_gui.py
-      - name: Test bundled application without an API request
-        shell: pwsh
-        run: |
-          $app = Start-Process -FilePath 'dist/ElevenLabs Toolkit/ElevenLabs Toolkit.exe' -ArgumentList '--self-test' -Wait -PassThru
-          if ($app.ExitCode -ne 0) { throw "Desktop self-test failed with exit code $($app.ExitCode)" }
       - name: Archive application folder
         run: Compress-Archive -Path 'dist/ElevenLabs Toolkit' -DestinationPath 'dist/ElevenLabs-Toolkit-Windows.zip'
+      - name: Test extracted application without an API request
+        shell: pwsh
+        run: |
+          $extracted = Join-Path $env:RUNNER_TEMP 'elevenlabs-windows-smoke'
+          Expand-Archive -LiteralPath 'dist/ElevenLabs-Toolkit-Windows.zip' -DestinationPath $extracted
+          $executable = Join-Path $extracted 'ElevenLabs Toolkit/ElevenLabs Toolkit.exe'
+          $app = Start-Process -FilePath $executable -ArgumentList '--self-test' -WindowStyle Hidden -Wait -PassThru
+          if ($app.ExitCode -ne 0) { throw "Desktop self-test failed with exit code $($app.ExitCode)" }
       - uses: actions/upload-artifact@v4
         with:
           name: ElevenLabs-Toolkit-Windows
@@ -64,10 +67,13 @@ jobs:
         run: uv pip install --python .venv/bin/python pyinstaller==6.22.3
       - name: Build app bundle
         run: .venv/bin/python scripts/build_gui.py
-      - name: Test bundled app without an API request
-        run: QT_QPA_PLATFORM=offscreen 'dist/ElevenLabs Toolkit.app/Contents/MacOS/ElevenLabs Toolkit' --self-test
       - name: Archive app bundle with macOS metadata
         run: ditto -c -k --keepParent 'dist/ElevenLabs Toolkit.app' 'dist/ElevenLabs-Toolkit-macOS.zip'
+      - name: Test extracted app without an API request
+        run: |
+          extracted=$(mktemp -d "$RUNNER_TEMP/elevenlabs-macos-smoke.XXXXXX")
+          ditto -x -k 'dist/ElevenLabs-Toolkit-macOS.zip' "$extracted"
+          QT_QPA_PLATFORM=offscreen "$extracted/ElevenLabs Toolkit.app/Contents/MacOS/ElevenLabs Toolkit" --self-test
       - uses: actions/upload-artifact@v4
         with:
           name: ElevenLabs-Toolkit-macOS

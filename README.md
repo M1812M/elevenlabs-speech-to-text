@@ -437,23 +437,21 @@ Open the resulting app from Finder. The app defaults to your home directory as
 its configuration context; use Configuration to select a project folder and
 Transcribe's **Credentials file** field to select an existing `.env` file.
 The app's **Help → Credentials and API Costs** menu also explains this setup.
-The file should contain `ELEVENLABS_API_KEY=your-key` on its own line. Leave
+The file should contain `ELEVENLABS_API_KEY=your-key` on its own line. Use the
+secret starting with `sk_` shown when you create or rotate the key. Leave
 the field empty to use `.env` in the selected project folder. An API key in the
 process environment takes precedence. The GUI does not save the selected
 credentials-file path in preferences or presets, so select it again after
 restarting if it differs from the project default. On macOS, press
 Command-Shift-Period in the file picker to show hidden `.env` files.
-The local build is not notarized for distribution. Build on the destination
-platform; Windows packaging has not yet been verified.
+The local macOS build is an unnotarized development build. Build on the
+destination platform.
 
-CI runs desktop tests and builds app artifacts on macOS and Windows. The macOS
-job has built, offline-tested and uploaded an app bundle; the downloaded bundle
-also passed the offline self-test locally. The user confirmed that a local
-packaged app opens, resizes, and keeps its bottom buttons visible in a small
-window; other native interactions remain to be verified.
-It is an unnotarized development build. The latest Linux desktop tests passed;
-the Windows job failed during GUI tests before packaging, so its app build remains
-unverified. Local fixes for the Windows failures need a new CI run.
+The [desktop fix branch run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44241772427)
+passed Linux and Windows GUI checks and tested the extracted macOS and Windows
+packages offline. The local macOS app also opens, resizes, and keeps its bottom
+buttons visible in a small window. The combined desktop and credential changes
+still need a GitHub Actions run.
 Artifacts from successful jobs are available on the corresponding
 [GitHub Actions run](https://github.com/M1812M/elevenlabs-speech-to-text/actions).
 A [manual desktop checklist](docs/desktop-manual-checks.md) covers visible
