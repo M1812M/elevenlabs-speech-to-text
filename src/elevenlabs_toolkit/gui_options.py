@@ -496,7 +496,8 @@ class TranscriptionPanel(TextOptionsPanel):
         self.env_file = QLineEdit()
         self.env_file.setPlaceholderText("Project .env")
         self.env_file.setToolTip(
-            "Select an existing dotenv file containing ELEVENLABS_API_KEY; the path is not saved. "
+            "Select a .env file containing your secret API key (ELEVENLABS_API_KEY). "
+            "The file path is not saved. "
             "See Help → Credentials and API Costs for setup."
         )
         self.choose_credentials = QPushButton("Browse…")

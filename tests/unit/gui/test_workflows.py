@@ -2597,7 +2597,7 @@ def test_credentials_help_is_available_from_help_menu(monkeypatch) -> None:
     action = next(action for action in help_menu.actions() if action.text() == "Credentials and API Costs")
     action.trigger()
     guidance = shown[0][2]
-    for phrase in ("ELEVENLABS_API_KEY", ".env", "Credentials file", "environment", "charges", "not saved"):
+    for phrase in ("ELEVENLABS_API_KEY", "sk_", ".env", "Credentials file", "environment", "charges", "not saved"):
         assert phrase.lower() in guidance.lower()
     window.close()
     app.processEvents()
