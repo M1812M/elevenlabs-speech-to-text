@@ -103,7 +103,9 @@ class ElevenLabsProvider:
             from elevenlabs.client import ElevenLabs
         except (ImportError, ModuleNotFoundError) as exc:
             raise ProviderDependencyError(
-                "ElevenLabs transcription requires the optional 'elevenlabs' package"
+                "ElevenLabs transcription requires the optional 'elevenlabs' package. "
+                "From the project folder, run: uv run --locked --extra stt python run_toolkit.py transcribe "
+                "(add your input path and options)."
             ) from exc
 
         api_key = resolve_api_key(
@@ -320,6 +322,13 @@ def _parse_dotenv(text: str) -> dict[str, str]:
 
 def _classified_error(exc: Exception) -> ProviderError:
     status = _status_code(exc)
+    body = getattr(exc, "body", None)
+    detail = body.get("detail") if isinstance(body, Mapping) else None
+    if isinstance(detail, Mapping) and detail.get("status") == "api_key_id_used_as_api_key":
+        return ProviderCredentialError(
+            "ElevenLabs received a key ID. Set ELEVENLABS_API_KEY to the secret starting with 'sk_' "
+            "shown when you create or rotate an ElevenLabs API key."
+        )
     message = str(exc) or type(exc).__name__
     if status in {401, 403}:
         return ProviderCredentialError(f"ElevenLabs rejected the credentials ({status}): {message}")

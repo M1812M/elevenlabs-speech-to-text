@@ -163,6 +163,20 @@ def test_auth_http_status_is_classified(tmp_path: Path) -> None:
         ElevenLabsProvider(client=_Client(error=HttpFailure("bad key"))).transcribe(source, TranscriptionOptions())
 
 
+def test_key_id_response_explains_how_to_replace_credential(tmp_path: Path) -> None:
+    class HttpFailure(Exception):
+        status_code = 400
+
+    source = tmp_path / "sample.wav"
+    source.write_bytes(b"media")
+    error = HttpFailure("raw SDK response")
+    error.body = {"detail": {"code": "invalid_api_key", "status": "api_key_id_used_as_api_key"}}
+    provider = ElevenLabsProvider(client=_Client(error=error))
+    with pytest.raises(ProviderCredentialError, match=r"key ID.*sk_") as caught:
+        provider.transcribe(source, TranscriptionOptions())
+    assert "raw SDK response" not in str(caught.value)
+
+
 def test_retry_after_seconds_are_preserved_on_transient_error(tmp_path: Path) -> None:
     class Response:
         def __init__(self) -> None:

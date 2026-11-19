@@ -15,19 +15,28 @@ JSON. It does not create a separate cache manifest or persistent lock file.
 Create `.env` in the project root:
 
 ```dotenv
-ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_API_KEY=your_secret_key_here
 ```
 
-Then put media in `media` and run:
+Use the secret starting with `sk_` shown when you create or rotate an
+ElevenLabs API key.
+
+Then put media in `media` and run this from the project folder. uv installs
+the locked ElevenLabs SDK in the project environment on first use.
 
 ```powershell
-python .\run_toolkit.py transcribe
+uv run --locked --extra stt python run_toolkit.py transcribe
 ```
 
 That command recursively finds supported media below `media`, transcribes every
 selected file, and writes one reusable JSON transcript per source to `media`.
 Existing JSON transcripts are replaced because `transcribe` means “request a
 fresh transcription.”
+
+Once the SDK is installed in the project `.venv`, `python run_toolkit.py transcribe`
+also works. The launcher uses that environment if the current Python cannot
+find ElevenLabs. To keep both the CLI and desktop dependencies available when
+syncing with uv, use `uv sync --locked --extra stt --extra gui`.
 
 Preview the exact files, outputs, and maximum API attempts without contacting
 ElevenLabs:
@@ -44,7 +53,7 @@ python .\run_toolkit.py --json transcribe --dry-run
 | Output when omitted | `./media` |
 | Directory scanning | Recursive |
 | Transcription output | JSON only |
-| Credentials file | `./.env` |
+| Credentials file | `./.env`, with the project’s `.env` as a fallback when launched via `run_toolkit.py` |
 | Model | `scribe_v2` |
 | Timestamps | Character |
 | Existing transcription outputs | Replace |

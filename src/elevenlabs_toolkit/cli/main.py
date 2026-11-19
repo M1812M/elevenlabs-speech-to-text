@@ -4,6 +4,7 @@ import argparse
 import traceback
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 from ..application import ExportError, PlanningError, TranscriptionJobError
 from ..config import ConfigurationError
@@ -21,7 +22,7 @@ def _version() -> str:
         return "0.0.0+local"
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, default_env_file: Path = Path(".env")) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="elevenlabs-toolkit",
         description="Transcribe media directly into ready-to-use post-production files.",
@@ -47,11 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text, configure in commands:
         command_parser = subparsers.add_parser(name, help=help_text, description=help_text)
         configure(command_parser)
+        if name == "transcribe":
+            command_parser.set_defaults(env_file=default_env_file)
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
+def main(argv: Sequence[str] | None = None, *, default_env_file: Path = Path(".env")) -> int:
+    parser = build_parser(default_env_file=default_env_file)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if not hasattr(args, "handler"):
         parser.print_help()
@@ -63,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         if args.command == "wizard":
-            return args.handler(args, context, dispatch=lambda nested: main(nested))
+            return args.handler(args, context, dispatch=lambda nested: main(nested, default_env_file=default_env_file))
         return int(args.handler(args, context))
     except KeyboardInterrupt:
         context.error("interrupted")
