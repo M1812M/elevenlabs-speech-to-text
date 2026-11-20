@@ -329,6 +329,11 @@ def _classified_error(exc: Exception) -> ProviderError:
             "ElevenLabs received a key ID. Set ELEVENLABS_API_KEY to the secret starting with 'sk_' "
             "shown when you create or rotate an ElevenLabs API key."
         )
+    if isinstance(detail, Mapping) and detail.get("status") == "missing_permissions":
+        return ProviderCredentialError(
+            "The ElevenLabs API key lacks permission for this request. "
+            "Enable Speech to Text access for the key in ElevenLabs, then retry."
+        )
     message = str(exc) or type(exc).__name__
     if status in {401, 403}:
         return ProviderCredentialError(f"ElevenLabs rejected the credentials ({status}): {message}")

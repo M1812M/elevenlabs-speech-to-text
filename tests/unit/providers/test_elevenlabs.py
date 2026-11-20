@@ -177,6 +177,20 @@ def test_key_id_response_explains_how_to_replace_credential(tmp_path: Path) -> N
     assert "raw SDK response" not in str(caught.value)
 
 
+def test_missing_permissions_response_explains_speech_to_text_access(tmp_path: Path) -> None:
+    class HttpFailure(Exception):
+        status_code = 401
+
+    source = tmp_path / "sample.wav"
+    source.write_bytes(b"media")
+    error = HttpFailure("raw SDK response")
+    error.body = {"detail": {"status": "missing_permissions"}}
+    provider = ElevenLabsProvider(client=_Client(error=error))
+    with pytest.raises(ProviderCredentialError, match="Speech to Text") as caught:
+        provider.transcribe(source, TranscriptionOptions())
+    assert "raw SDK response" not in str(caught.value)
+
+
 def test_retry_after_seconds_are_preserved_on_transient_error(tmp_path: Path) -> None:
     class Response:
         def __init__(self) -> None:
