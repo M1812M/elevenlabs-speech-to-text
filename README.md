@@ -447,11 +447,10 @@ Command-Shift-Period in the file picker to show hidden `.env` files.
 The local macOS build is an unnotarized development build. Build on the
 destination platform.
 
-The [desktop fix branch run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44241772427)
+The [combined desktop and credential run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44539457902)
 passed Linux and Windows GUI checks and tested the extracted macOS and Windows
 packages offline. The local macOS app also opens, resizes, and keeps its bottom
-buttons visible in a small window. The combined desktop and credential changes
-still need a GitHub Actions run.
+buttons visible in a small window.
 Artifacts from successful jobs are available on the corresponding
 [GitHub Actions run](https://github.com/M1812M/elevenlabs-speech-to-text/actions).
 A [manual desktop checklist](docs/desktop-manual-checks.md) covers visible

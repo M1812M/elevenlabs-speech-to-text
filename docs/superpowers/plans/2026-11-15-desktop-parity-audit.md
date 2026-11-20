@@ -185,17 +185,17 @@ GitHub CI run 44220137184 passed all Python 3.10–3.15 quality jobs, Linux GUI 
 macOS bundle build, offline self-test and artifact upload. The downloaded CI
 artifact from an earlier run matched GitHub's SHA-256 digest and its unpacked
 macOS app passed the offline self-test locally; this is not a visible native-interaction test.
-The latest Windows job failed in GUI tests before packaging: three JSON-path
+An earlier Windows job failed in GUI tests before packaging: three JSON-path
 assertions assumed unescaped path separators, while layout checks encountered
 larger Windows minimum widths and offscreen focus. Local changes parse JSON paths,
 check actual button visibility at platform minimum sizes, and reveal the focused
-control's center in scroll areas. These changes and Windows packaging require a
-new Windows CI run. The subsequent
+control's center in scroll areas. The subsequent
 [desktop fix branch run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44241772427)
 passed Windows and Linux GUI tests, the Python 3.10–3.15 quality matrix,
 and offline self-tests of both extracted desktop archives. The desktop fix
-and credential changes pass 708 tests locally. The combined changes still
-need a GitHub Actions run.
+and credential changes pass 708 tests locally. The later
+[combined changes run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44539457902)
+also passed all nine jobs, including both extracted package self-tests.
 The clean-export parity check also now reads Cyrillic JSON explicitly as UTF-8
 and verifies the converted text, avoiding reliance on the Windows default encoding.
 All 313 current desktop and launcher tests passed locally on Python 3.13 with
