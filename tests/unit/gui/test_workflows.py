@@ -2619,7 +2619,15 @@ def test_credentials_help_is_available_from_help_menu(monkeypatch) -> None:
     action = next(action for action in help_menu.actions() if action.text() == "Credentials and API Costs")
     action.trigger()
     guidance = shown[0][2]
-    for phrase in ("ELEVENLABS_API_KEY", "sk_", ".env", "Credentials file", "environment", "charges", "not saved"):
+    for phrase in (
+        "ELEVENLABS_API_KEY",
+        "sk_",
+        ".env",
+        "Configuration → Choose Credentials File",
+        "environment",
+        "charges",
+        "not saved",
+    ):
         assert phrase.lower() in guidance.lower()
     window.close()
     app.processEvents()
@@ -5649,3 +5657,72 @@ def test_batch_row_shows_short_paths_and_full_details(tmp_path: Path, monkeypatc
     assert opened[0] == opened[1]
     window.close()
     app.processEvents()
+
+
+def test_gui_and_cli_transcribe_through_real_sdk_with_uncompressed_response(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("elevenlabs")
+    import elevenlabs.client
+    import httpx
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("elevenlabs_toolkit.config.user_config_path", lambda: tmp_path / "user-config.toml")
+    audio = tmp_path / "sample.flac"
+    original = b"disposable media fixture"
+    audio.write_bytes(original)
+    credentials = tmp_path / "credentials.env"
+    credentials.write_text("ELEVENLABS_API_KEY=mock-transport-key\n", encoding="utf-8")
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        encoding = request.headers.get("accept-encoding")
+        calls.append((request.method, request.url.path, encoding, request.headers.get("xi-api-key")))
+        assert original in request.read()
+        headers = {} if encoding == "identity" else {"content-encoding": "gzip"}
+        body = json.dumps(
+            {
+                "language_code": "en",
+                "language_probability": 0.99,
+                "text": "hello",
+                "words": [
+                    {
+                        "text": "hello",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "h", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+        ).encode("utf-8")
+        return httpx.Response(200, headers=headers, content=body)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    real_client = elevenlabs.client.ElevenLabs
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr(
+            elevenlabs.client, "ElevenLabs", lambda **kwargs: real_client(httpx_client=http_client, **kwargs)
+        )
+        monkeypatch.setattr(
+            "elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(credentials), "")
+        )
+        window.navigation.setCurrentRow(5)
+        window.config_choose_credentials.click()
+        window.navigation.setCurrentRow(0)
+        window.add_paths([audio])
+        window.start.click()
+        assert window.worker.wait(5000)
+        app.processEvents()
+        assert window.batch_table.item(0, 2).text() == "ok", window.batch_table.item(0, 3).text()
+        cli_output = tmp_path / "cli"
+        assert main(["transcribe", str(audio), "--env-file", str(credentials), "-o", str(cli_output)]) == 0
+
+    assert calls == [("POST", "/v1/speech-to-text", "identity", "mock-transport-key")] * 2
+    transcript = (tmp_path / "Output" / "sample.flac.transcript.json").read_bytes()
+    assert transcript == (cli_output / "sample.json").read_bytes()
+    assert json.loads(transcript)["text"] == "hello"
+    assert audio.read_bytes() == original
+    window.close()

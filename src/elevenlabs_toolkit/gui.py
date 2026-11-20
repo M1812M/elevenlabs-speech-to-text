@@ -1416,12 +1416,15 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Using the Toolkit",
-            "Choose a workflow, then add files or folders using the buttons or drag and drop. "
-            "Use Preview to check destinations and planned API requests before running.\n\n"
-            "By default, files are saved in an Output subfolder beside each source. "
+            "Choose a workflow and drop files or folders onto the batch table. "
+            "Open Inputs to review your selections or Job Settings for advanced options. "
+            "Use Preview to check destinations and planned API requests.\n\n"
+            "Files are saved in an Output subfolder beside each source by default. "
             "Clear Use Output subfolder to choose another folder or save beside the source. "
-            "Transcribe saves JSON by default. "
-            "Use Export to render saved JSON offline. Configuration displays the active project settings.",
+            "Select a result and press Enter to see its full paths and any error. "
+            "Use Open Output Folder to find your files and Retry Unfinished to recover a batch.\n\n"
+            "Transcribe saves JSON. Use Export to render saved JSON offline. "
+            "Find reusable settings under Configuration → Presets and batch reports under More Actions.",
         )
 
     def show_about(self) -> None:
@@ -1439,8 +1442,8 @@ class MainWindow(QMainWindow):
             "Create a plain-text file named .env containing a line such as "
             "ELEVENLABS_API_KEY=your-key. Use the secret starting with sk_ that ElevenLabs shows "
             "when you create or rotate an API key. "
-            "Place it in the project folder selected under Configuration, or use "
-            "Transcribe → Credentials file → Browse to select an existing file. "
+            "Place it in the project folder selected under Configuration, or select an existing file using "
+            "Configuration → Choose Credentials File…. "
             "On macOS, Command-Shift-Period shows hidden files in the file picker.\n\n"
             "An ELEVENLABS_API_KEY in the process environment takes precedence over the file. "
             "The selected credentials-file path is not saved in settings or presets; "
