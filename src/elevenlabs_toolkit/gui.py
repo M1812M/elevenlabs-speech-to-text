@@ -11,28 +11,56 @@ from dataclasses import replace as replace_settings
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QByteArray, QSettings, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDragMoveEvent, QDropEvent, QStandardItemModel
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    QSettings,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDesktopServices,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -87,11 +115,35 @@ class FileList(QListWidget):
             event.acceptProposedAction()
 
 
+class BatchPathDelegate(QStyledItemDelegate):
+    """Display filenames while retaining the original paths in the batch model."""
+
+    def initStyleOption(self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex) -> None:
+        super().initStyleOption(option, index)
+        if index.column() == 0 and option.text:
+            option.text = Path(option.text).name or option.text
+        elif index.column() == 1:
+            outputs = index.data(Qt.ItemDataRole.UserRole)
+            if outputs:
+                option.text = Path(outputs[0]).name
+                if len(outputs) > 1:
+                    option.text += f" (+{len(outputs) - 1} more)"
+
+
 class BatchTable(QTableWidget):
     def __init__(self, add_paths: Callable[[list[Path]], None]) -> None:
         super().__init__(0, 4)
         self.add_paths = add_paths
         self.setAcceptDrops(True)
+
+    open_details = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
+            self.open_details.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -799,13 +851,16 @@ class MainWindow(QMainWindow):
         self.add_folder = QPushButton("Add Folder")
         self.remove = QPushButton("Remove Selected")
         self.clear = QPushButton("Clear")
-        for button in (self.add_files, self.add_folder, self.remove, self.clear):
+        self.inputs_button = QPushButton("Inputs (0)")
+        self.inputs_button.setCheckable(True)
+        self.job_settings_button = QPushButton("Job Settings…")
+        self.job_settings_button.setCheckable(True)
+        for button in (self.add_files, self.add_folder, self.inputs_button, self.job_settings_button):
             buttons.addWidget(button)
         panel.addLayout(buttons)
 
-        self.input_controls = QWidget()
-        filters = QHBoxLayout(self.input_controls)
-        filters.setContentsMargins(0, 0, 0, 0)
+        self.input_controls = QGroupBox("Input selection")
+        filters = QFormLayout(self.input_controls)
         self.recursive = QCheckBox("Include subfolders")
         self.recursive.setChecked(True)
         self.recursive.setToolTip("Search inside subfolders of each selected folder.")
@@ -830,8 +885,10 @@ class MainWindow(QMainWindow):
         self.filter_kind.currentIndexChanged.connect(lambda index: self.pattern.setEnabled(index != 0))
         self.filter_kind.currentIndexChanged.connect(self.validate_folder_filter)
         self.pattern.textChanged.connect(self.validate_folder_filter)
-        for control in (self.recursive, self.include_generated, self.filter_kind, pattern_container):
-            filters.addWidget(control)
+        filters.addRow(self.recursive)
+        filters.addRow(self.include_generated)
+        filters.addRow("Folder filter", self.filter_kind)
+        filters.addRow("Pattern", pattern_container)
         self.include_generated.hide()
         panel.addWidget(self.input_controls)
 
@@ -840,24 +897,35 @@ class MainWindow(QMainWindow):
         self.file_list = FileList(self.add_paths)
         self.file_list.setAccessibleName("Selected input files and folders")
         self.file_list.setToolTip("Drop files or folders here")
-        panel.addWidget(self.file_list, 1)
+        self.file_list.setMaximumHeight(115)
+        panel.addWidget(self.file_list)
+        input_actions = QHBoxLayout()
+        input_actions.addWidget(self.remove)
+        input_actions.addWidget(self.clear)
+        input_actions.addStretch(1)
+        panel.addLayout(input_actions)
+        self.file_list.model().rowsInserted.connect(self.update_input_disclosure)
+        self.file_list.model().rowsRemoved.connect(self.update_input_disclosure)
+        self.file_list.model().modelReset.connect(self.update_input_disclosure)
+        self.inputs_button.toggled.connect(self.update_input_disclosure)
         self.batch_label = QLabel("Batch plan and results")
         panel.addWidget(self.batch_label)
         self.batch_table = BatchTable(self.add_paths)
         self.batch_table.setAccessibleName("Batch plan and results")
         self.batch_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.batch_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.batch_table.setHorizontalHeaderLabels(["Input", "Output", "Status", "Error"])
+        self.batch_table.setHorizontalHeaderLabels(["File", "Output", "Status", "Error"])
+        path_delegate = BatchPathDelegate(self.batch_table)
+        for column in (0, 1):
+            self.batch_table.setItemDelegateForColumn(column, path_delegate)
+        self.batch_table.hideColumn(3)
         self.batch_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         header = self.batch_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.batch_table.setToolTip("Drop files or folders here; preview or run to see individual results")
+        self.batch_table.setToolTip("Drop files or folders here. Open a result row to see its full paths and error.")
         panel.addWidget(self.batch_table, 1)
-        self.save_report = QPushButton("Save Batch Report…")
-        self.save_report.clicked.connect(self.save_batch_report)
         self.open_output = QPushButton("Open Output Folder")
         self.open_output.setToolTip("Open the selected row's folder, or the shared folder when all outputs use one.")
         self.open_output.clicked.connect(self.open_output_folder)
@@ -872,10 +940,24 @@ class MainWindow(QMainWindow):
         )
         self.retry_button.clicked.connect(self.retry_failed)
         batch_actions.addWidget(self.retry_button, 0, 1)
-        batch_actions.addWidget(self.save_report, 1, 0)
+        self.more_actions = QPushButton("More Actions")
+        actions_menu = QMenu(self.more_actions)
+        self.batch_row_details = actions_menu.addAction("View Selected File Details…", self.show_batch_row_details)
+        self.batch_row_details.setEnabled(False)
+        self.batch_table.itemSelectionChanged.connect(self.update_batch_row_details_action)
+        self.batch_table.doubleClicked.connect(self.show_batch_row_details)
+        self.batch_table.open_details.connect(self.show_batch_row_details)
+        self.save_report = actions_menu.addAction("Save Batch Report…", self.save_batch_report)
+        self.show_effective = actions_menu.addAction("Show Effective Settings", self.show_workflow_configuration)
+        self.more_actions.setMenu(actions_menu)
+        batch_actions.addWidget(self.more_actions, 0, 2)
         panel.addLayout(batch_actions)
 
         self.options = QStackedWidget()
+        # Keep the scroll range in sync when an options page grows after layout.
+        options_layout = self.options.layout()
+        assert options_layout is not None  # QStackedWidget creates its own layout.
+        options_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         convert = QWidget()
         convert_layout = QHBoxLayout(convert)
         self.mode = QComboBox()
@@ -884,6 +966,7 @@ class MainWindow(QMainWindow):
         convert_layout.addWidget(self.mode)
         convert_layout.addStretch(1)
         self.transcription_options = TranscriptionPanel()
+        self.main_scroll.viewport().installEventFilter(self)
         self.options.addWidget(self.transcription_options)
         self.options.addWidget(convert)
         export_panel = QWidget()
@@ -931,22 +1014,74 @@ class MainWindow(QMainWindow):
         self.choose_project = QPushButton("Choose Project Folder")
         self.choose_project.clicked.connect(self.select_project)
         config_layout.addWidget(self.choose_project)
+        config_layout.addWidget(QLabel("ElevenLabs credentials file (.env)"))
+        credentials_row = QHBoxLayout()
+        self.config_credentials = QLineEdit()
+        self.config_credentials.setPlaceholderText("Project .env (default)")
+        self.config_credentials.setToolTip("Select a file containing ELEVENLABS_API_KEY. This path is not saved.")
+        self.config_choose_credentials = QPushButton("Choose Credentials File…")
+        self.config_choose_credentials.clicked.connect(self.transcription_options.select_credentials_file)
+        self.config_credentials.textChanged.connect(self.transcription_options.env_file.setText)
+        self.transcription_options.env_file.textChanged.connect(self.config_credentials.setText)
+        credentials_row.addWidget(self.config_credentials)
+        credentials_row.addWidget(self.config_choose_credentials)
+        config_layout.addLayout(credentials_row)
+        credentials_help = QLabel(
+            "Use the secret key starting with sk_ in your .env file. Environment variables take precedence."
+        )
+        credentials_help.setWordWrap(True)
+        config_layout.addWidget(credentials_help)
         self.config_profile = QComboBox()
         self.config_profile.setEditable(True)
         self.config_profile.addItem("Project default")
         config_layout.addWidget(self.config_profile)
         config_layout.addWidget(QLabel("Shows the effective merged configuration and available profiles."))
+        self.preset_button = QPushButton("Presets")
+        config_layout.addWidget(self.preset_button)
         self.options.addWidget(config_panel)
-        options_scroll = QScrollArea()
-        options_scroll.setWidgetResizable(True)
-        options_scroll.setWidget(self.options)
-        options_scroll.setMaximumHeight(300)
-        panel.addWidget(options_scroll)
+        self.options_scroll = QScrollArea()
+        self.options_scroll.setWidgetResizable(True)
+        self.options_scroll.setWidget(self.options)
+        self.options_scroll.setMinimumHeight(350)
+        self.options_scroll.setMaximumHeight(500)
+        self.quick_controls = QStackedWidget()
+        self.quick_controls.addWidget(
+            self.make_quick_controls(
+                (("Language", self.transcription_options.language),),
+                (
+                    ("Local formats", tuple(self.transcription_options.local_formats.values())),
+                    ("ElevenLabs formats", tuple(self.transcription_options.remote_formats.values())),
+                ),
+            )
+        )
+        self.quick_controls.addWidget(QWidget())
+        self.quick_controls.addWidget(
+            self.make_quick_controls(
+                (("Profile", self.take_profile(self.export_text)),),
+                (("Export formats", tuple(self.export_formats.values())),),
+            )
+        )
+        self.quick_controls.addWidget(self.make_quick_controls((("Profile", self.take_profile(self.clean_text)),)))
+        panel.insertWidget(panel.indexOf(self.input_controls), self.quick_controls)
 
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setPlaceholderText("Preview output paths or inspect the results here.")
         self.details.setMinimumHeight(130)
+        self.details_button = QPushButton("Show Details")
+        self.details_button.setCheckable(True)
+        self.show_effective.triggered.connect(lambda: self.details_button.setChecked(True))
+        self.details_button.toggled.connect(self.update_details_disclosure)
+        self.details_summary = QLabel()
+        self.details_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.details_summary.setWordWrap(True)
+        self.details_summary.setMaximumHeight(44)
+        details_row = QHBoxLayout()
+        details_row.addWidget(self.details_summary, 1)
+        details_row.addWidget(self.details_button)
+        panel.addLayout(details_row)
+        self.details.textChanged.connect(self.update_details_disclosure)
+        self.details.setMaximumHeight(185)
         panel.addWidget(self.details)
         bottom = QHBoxLayout()
         self.progress = QProgressBar()
@@ -974,6 +1109,11 @@ class MainWindow(QMainWindow):
         choose_output = QPushButton("Browse…")
         choose_output.clicked.connect(self.select_output_directory)
         self.output_subfolder.toggled.connect(self.output_directory.setDisabled)
+        self.output_subfolder.toggled.connect(
+            lambda use_subfolder: self.output_directory.setPlaceholderText(
+                "Output subfolder beside each source" if use_subfolder else "Beside source files"
+            )
+        )
         self.output_subfolder.toggled.connect(choose_output.setDisabled)
         self.conflict = QComboBox()
         self.conflict.setToolTip("Choose what happens when an output already exists. Source files are protected.")
@@ -992,9 +1132,12 @@ class MainWindow(QMainWindow):
         output_row.addWidget(self.output_directory, 0, 1, 1, 2)
         output_row.addWidget(choose_output, 0, 3)
         output_row.addWidget(self.output_subfolder, 1, 0, 1, 2)
-        output_row.addWidget(self.conflict, 1, 2)
-        output_row.addWidget(self.fail_fast, 1, 3)
-        panel.addWidget(self.output_controls)
+        self.job_policy_summary = QLabel()
+        self.job_policy_summary.setWordWrap(True)
+        output_row.addWidget(self.job_policy_summary, 1, 2, 1, 2)
+        panel.insertWidget(panel.indexOf(self.batch_label), self.options_scroll)
+        panel.insertWidget(panel.indexOf(self.batch_label), self.output_controls)
+        self.job_settings_button.toggled.connect(self.update_job_settings_disclosure)
         model = self.conflict.model()
         assert isinstance(model, QStandardItemModel)
         self.rename_option = model.item(3)
@@ -1003,10 +1146,18 @@ class MainWindow(QMainWindow):
         self.report_mode.addItems(["Standard", "JSON", "Quiet", "Verbose"])
         self.report_mode.setToolTip("Result format and progress detail")
         self.review_before_running = QCheckBox("Review before running")
+        self.batch_controls = QGroupBox("Batch behavior")
+        batch_form = QFormLayout(self.batch_controls)
+        batch_form.addRow("Existing outputs", self.conflict)
+        batch_form.addRow(self.fail_fast)
+        batch_form.addRow("Result detail", self.report_mode)
+        batch_form.addRow(self.review_before_running)
+        panel.insertWidget(panel.indexOf(self.input_controls) + 1, self.batch_controls)
+        self.conflict.currentTextChanged.connect(self.update_job_policy_summary)
+        self.fail_fast.toggled.connect(self.update_job_policy_summary)
+        self.report_mode.currentTextChanged.connect(self.update_job_policy_summary)
+        self.review_before_running.toggled.connect(self.update_job_policy_summary)
         self.preview = QPushButton("Preview")
-        self.show_effective = QPushButton("Show Effective Settings")
-        self.show_effective.setToolTip("Show profile settings and values explicitly overridden in this workflow")
-        batch_actions.addWidget(self.show_effective, 1, 1)
         self.preview_content_button = QPushButton("Preview Content")
         self.preview_content_button.setToolTip(
             "Preview the first supported subtitle or text output without writing files"
@@ -1017,13 +1168,10 @@ class MainWindow(QMainWindow):
         self.stop.setEnabled(False)
         self.start = QPushButton("Transcribe")
         self.start.setDefault(True)
-        status_row = QHBoxLayout()
-        for status_widget in (self.progress, self.report_mode, self.review_before_running):
-            status_row.addWidget(status_widget)
         footer = QWidget()
         footer_layout = QVBoxLayout(footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
-        footer_layout.addLayout(status_row)
+        footer_layout.addWidget(self.progress)
         for widget in (self.preview, self.preview_content_button, self.stop, self.start):
             bottom.addWidget(widget)
         footer_layout.addLayout(bottom)
@@ -1036,7 +1184,6 @@ class MainWindow(QMainWindow):
         self.clear.clicked.connect(self.clear_files)
         self.navigation.currentRowChanged.connect(self.change_workflow)
         self.preview.clicked.connect(self.show_preview)
-        self.show_effective.clicked.connect(self.show_workflow_configuration)
         self.preview_content_button.clicked.connect(lambda: self.launch_worker(preview_only=True, content_preview=True))
         self.start.clicked.connect(self.start_job)
         self.stop.clicked.connect(self.stop_job)
@@ -1048,6 +1195,7 @@ class MainWindow(QMainWindow):
         self.preferences_menu.addAction("Load Preset…", self.prompt_load_preset)
         self.preferences_menu.addAction("Delete Preset…", self.prompt_delete_preset)
         self.preferences_menu.addAction("Reset to Defaults", self.reset_preferences)
+        self.preset_button.setMenu(self.preferences_menu)
         controls = self.workflow_controls.get(0, WorkflowControls())
         self.recursive.setChecked(controls.recursive)
         self.include_generated.setChecked(controls.include_generated)
@@ -1065,6 +1213,9 @@ class MainWindow(QMainWindow):
         self.filter_kind.currentIndexChanged.connect(self.update_output_warning)
         self.pattern.textChanged.connect(self.update_output_warning)
         self.update_output_warning()
+        self.update_input_disclosure()
+        self.update_job_settings_disclosure()
+        self.update_details_disclosure()
         for line_field in self.findChildren(QLineEdit):
             line_field.textChanged.connect(self.invalidate_preview)
         for text_field in self.findChildren(QPlainTextEdit):
@@ -1265,12 +1416,15 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Using the Toolkit",
-            "Choose a workflow, then add files or folders using the buttons or drag and drop. "
-            "Use Preview to check destinations and planned API requests before running.\n\n"
-            "By default, files are saved in an Output subfolder beside each source. "
+            "Choose a workflow and drop files or folders onto the batch table. "
+            "Open Inputs to review your selections or Job Settings for advanced options. "
+            "Use Preview to check destinations and planned API requests.\n\n"
+            "Files are saved in an Output subfolder beside each source by default. "
             "Clear Use Output subfolder to choose another folder or save beside the source. "
-            "Transcribe saves JSON by default. "
-            "Use Export to render saved JSON offline. Configuration displays the active project settings.",
+            "Select a result and press Enter to see its full paths and any error. "
+            "Use Open Output Folder to find your files and Retry Unfinished to recover a batch.\n\n"
+            "Transcribe saves JSON. Use Export to render saved JSON offline. "
+            "Find reusable settings under Configuration → Presets and batch reports under More Actions.",
         )
 
     def show_about(self) -> None:
@@ -1286,9 +1440,10 @@ class MainWindow(QMainWindow):
             "Preview shows planned requests and the maximum number of attempts. "
             "Conversion, export, cleaning, and inspection work offline.\n\n"
             "Create a plain-text file named .env containing a line such as "
-            "ELEVENLABS_API_KEY=your-key, using your own ElevenLabs API key. "
-            "Place it in the project folder selected under Configuration, or use "
-            "Transcribe → Credentials file → Browse to select an existing file. "
+            "ELEVENLABS_API_KEY=your-key. Use the secret starting with sk_ that ElevenLabs shows "
+            "when you create or rotate an API key. "
+            "Place it in the project folder selected under Configuration, or select an existing file using "
+            "Configuration → Choose Credentials File…. "
             "On macOS, Command-Shift-Period shows hidden files in the file picker.\n\n"
             "An ELEVENLABS_API_KEY in the process environment takes precedence over the file. "
             "The selected credentials-file path is not saved in settings or presets; "
@@ -1437,6 +1592,10 @@ class MainWindow(QMainWindow):
         self.file_list.addItems([str(path) for path in self.paths])
         self.update_output_warning()
         self.options.setCurrentIndex(row)
+        self.quick_controls.setVisible(row in (0, 2, 3))
+        if row in (0, 2, 3):
+            self.quick_controls.setCurrentIndex(row)
+        self.options_scroll.setMinimumHeight(350 if row == 0 else 0)
         headings = (
             "Transcribe audio or video to reusable JSON",
             "Convert Uzbek SRT/TXT between Latin and Cyrillic",
@@ -1464,11 +1623,16 @@ class MainWindow(QMainWindow):
             self.batch_label,
             self.batch_table,
             self.open_output,
-            self.save_report,
+            self.more_actions,
             self.retry_button,
         ):
             widget.setVisible(row != 5)
-        self.input_controls.setVisible(row != 5)
+        self.job_settings_button.setChecked(False)
+        self.inputs_button.setChecked(False)
+        self.details_button.setChecked(False)
+        self.update_input_disclosure()
+        self.update_job_settings_disclosure()
+        self.update_details_disclosure()
         self.include_generated.setVisible(row in (2, 3, 4))
         self.output_controls.setVisible(row < 4)
         self.rename_option.setEnabled(row != 0)
@@ -1477,8 +1641,6 @@ class MainWindow(QMainWindow):
         self.preview.setVisible(row != 5)
         self.show_effective.setVisible(row in (0, 2, 3))
         self.preview_content_button.hide()
-        self.review_before_running.hide()
-        self.review_before_running.setVisible(row in (0, 2))
         self.preview_content_button.setVisible(row in (1, 2))
         state = self.batch_states.pop(row, None)
         if state is not None:
@@ -1500,6 +1662,95 @@ class MainWindow(QMainWindow):
             self.progress.setValue(0)
         if row == 5:
             self.show_configuration()
+
+    def update_input_disclosure(self, *_args: object) -> None:
+        self.inputs_button.setText(f"Inputs ({self.file_list.count()})")
+        self.inputs_button.setVisible(self.active_workflow != 5)
+        expanded = self.active_workflow != 5 and self.inputs_button.isChecked()
+        for widget in (self.file_list, self.input_label, self.remove, self.clear):
+            widget.setVisible(expanded)
+
+    @staticmethod
+    def take_profile(options: TextOptionsPanel) -> QComboBox:
+        layout = options.layout()
+        assert isinstance(layout, QFormLayout)
+        row = layout.takeRow(options.profile)
+        if row.labelItem is not None and (label := row.labelItem.widget()) is not None:
+            label.deleteLater()
+        return options.profile
+
+    @staticmethod
+    def make_quick_controls(
+        fields: tuple[tuple[str, QWidget], ...],
+        formats: tuple[tuple[str, tuple[QCheckBox, ...]], ...] = (),
+    ) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        for title, field in fields:
+            label = QLabel(title)
+            label.setBuddy(field)
+            field.setAccessibleName(title)
+            layout.addWidget(label)
+            layout.addWidget(field, 1)
+        if formats:
+            button = QPushButton()
+            menu = QMenu(button)
+            checkboxes = [checkbox for _, group in formats for checkbox in group]
+            for title, group in formats:
+                submenu = menu.addMenu(title) if len(formats) > 1 else menu
+                for checkbox in group:
+                    action = submenu.addAction(checkbox.text())
+                    action.setCheckable(True)
+                    action.setChecked(checkbox.isChecked())
+                    action.toggled.connect(checkbox.setChecked)
+                    checkbox.toggled.connect(action.setChecked)
+
+            def update_format_label() -> None:
+                count = sum(checkbox.isChecked() for checkbox in checkboxes)
+                label = "Additional Formats" if len(formats) > 1 else "Output Formats"
+                button.setText(f"{label} ({count})")
+
+            for checkbox in checkboxes:
+                checkbox.toggled.connect(update_format_label)
+            update_format_label()
+            button.setMenu(menu)
+            layout.addWidget(button)
+        return bar
+
+    def update_job_settings_disclosure(self, *_args: object) -> None:
+        row = self.active_workflow
+        self.job_settings_button.setVisible(row != 5)
+        expanded = row != 5 and self.job_settings_button.isChecked()
+        self.input_controls.setVisible(expanded)
+        self.batch_controls.setVisible(expanded)
+        layout = self.batch_controls.layout()
+        assert isinstance(layout, QFormLayout)
+        layout.setRowVisible(self.conflict, row < 4)
+        layout.setRowVisible(self.fail_fast, row < 4)
+        layout.setRowVisible(self.review_before_running, row in (0, 2))
+        self.update_job_policy_summary()
+        self.options_scroll.setVisible(row in (1, 5) or (expanded and row in (0, 2, 3)))
+
+    def update_job_policy_summary(self, *_args: object) -> None:
+        policies = [self.conflict.currentText()]
+        if self.fail_fast.isChecked():
+            policies.append(self.fail_fast.text())
+        if self.review_before_running.isChecked() and self.active_workflow in (0, 2):
+            policies.append(self.review_before_running.text())
+        if self.report_mode.currentIndex():
+            policies.append(self.report_mode.currentText())
+        self.job_policy_summary.setText(" · ".join(policies))
+
+    def update_details_disclosure(self, *_args: object) -> None:
+        configuration = self.active_workflow == 5
+        expanded = self.details_button.isChecked()
+        message = self.details.document().firstBlock().text()
+        self.details_summary.setText(message[:180] or "Drop files or folders into the batch table.")
+        self.details_summary.setVisible(not configuration)
+        self.details_button.setVisible(not configuration)
+        self.details_button.setText("Hide Details" if expanded else "Show Details")
+        self.details.setVisible(configuration or expanded)
 
     def current_controls(self) -> WorkflowControls:
         return WorkflowControls(
@@ -1636,6 +1887,7 @@ class MainWindow(QMainWindow):
         try:
             self.validate_folder_filter()
             if self.pattern_error.text():
+                self.job_settings_button.setChecked(True)
                 self.pattern.setFocus()
                 raise ValueError(self.pattern_error.text())
             if (
@@ -1645,12 +1897,14 @@ class MainWindow(QMainWindow):
             ):
                 message = "Cleaned JSON requires cleanup; choose the profile default or Uzbek editorial cleanup."
                 self.export_text.cleanup_error.setText(message)
+                self.job_settings_button.setChecked(True)
                 self.export_text.cleanup.setFocus()
                 raise ValueError(message)
             if self.active_workflow == 2 and ArtifactFormat.COMBINED_TXT in self.selected_formats():
                 if not self.export_text.validate_combined_name():
                     if self.export_text.advanced_section is not None:
                         self.export_text.advanced_section.toggle.setChecked(True)
+                    self.job_settings_button.setChecked(True)
                     self.export_text.combined_name.setFocus()
                     raise ValueError(f"Combined text filename: {self.export_text.combined_name_error.text()}")
             settings = self.desktop_settings()
@@ -1668,6 +1922,8 @@ class MainWindow(QMainWindow):
                 if self.report_mode.currentText() == "JSON"
                 else f"Preflight failed: {exc}"
             )
+            self.job_settings_button.setChecked(True)
+            self.details_button.setChecked(True)
             self.details.setPlainText(message)
             return
         action = ("Transcribe", "Convert Script", "Export", "Clean", "Inspect")[self.active_workflow]
@@ -1845,6 +2101,40 @@ class MainWindow(QMainWindow):
             if status is not None and status.text() == "Pending":
                 self.batch_table.setItem(row, 2, QTableWidgetItem(f"Not run — {reason.lower()}"))
 
+    def update_batch_row_details_action(self) -> None:
+        self.batch_row_details.setEnabled(bool(self.batch_table.selectedItems()))
+
+    def show_batch_row_details(self) -> None:
+        selected = self.batch_table.selectedItems()
+        if not selected:
+            return
+        row = selected[0].row()
+        source, output, status, error = (self.batch_table.item(row, column) for column in range(4))
+        if source is None:
+            return
+        targets = output.data(Qt.ItemDataRole.UserRole) if output is not None else None
+        destination = "\n".join(targets) if targets else "No output planned"
+        message = f"Input\n{source.text()}\n\nOutputs\n{destination}"
+        if status is not None:
+            message += f"\n\nStatus\n{status.text()}"
+        if error is not None and error.text():
+            message += f"\n\nError\n{error.text()}"
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Batch File Details")
+        layout = QVBoxLayout(dialog)
+        details = QPlainTextEdit(message)
+        details.setAccessibleName("Full batch file details")
+        details.setReadOnly(True)
+        details.setTabChangesFocus(True)
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(640, 360)
+        dialog.exec()
+        dialog.deleteLater()
+
     def save_batch_report(self) -> None:
         from .files import atomic_write_text
 
@@ -1868,6 +2158,11 @@ class MainWindow(QMainWindow):
             self.details.setPlainText(f"Batch report saved: {name}")
         except (OSError, ValueError) as exc:
             self.details.setPlainText(f"Could not save batch report: {exc}")
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.main_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            self.transcription_options.set_available_width(self.main_scroll.viewport().width())
+        return super().eventFilter(watched, event)
 
     def open_output_folder(self) -> None:
         selected = self.batch_table.selectedItems()
@@ -1915,15 +2210,15 @@ class MainWindow(QMainWindow):
             self.clear,
             self.file_list,
             self.batch_table,
-            self.save_report,
+            self.more_actions,
             self.open_output,
+            self.quick_controls,
             self.options,
             self.input_controls,
             self.output_controls,
             self.report_mode,
             self.review_before_running,
             self.preview,
-            self.show_effective,
             self.preview_content_button,
             self.start,
         ):
@@ -1943,6 +2238,8 @@ class MainWindow(QMainWindow):
 
     def job_finished(self, message: str) -> None:
         self.details.setPlainText(message)
+        if self.active_workflow == 4 or self.worker.content_preview:
+            self.details_button.setChecked(True)
 
     def worker_finished(self) -> None:
         self.set_running(False)

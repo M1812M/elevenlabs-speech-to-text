@@ -1609,9 +1609,15 @@ def test_focus_reveals_center_of_wide_control(monkeypatch) -> None:
     window.resize(800, 400)
     window.show()
     window.navigation.setCurrentRow(0)
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
     field = window.transcription_options.model
     field.setMinimumWidth(1400)
-    app.processEvents()
+    for _ in range(20):
+        app.processEvents()
+        if window.options_scroll.horizontalScrollBar().maximum() > 0:
+            break
+    assert window.options_scroll.horizontalScrollBar().maximum() > 0
     field.setFocus()
     app.processEvents()
     window.reveal_focused_control()
@@ -1667,6 +1673,8 @@ def test_keyboard_can_reach_visible_expanded_advanced_options(monkeypatch, workf
     window.resize(600, 300)
     window.show()
     window.navigation.setCurrentRow(workflow)
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
     panel = window.transcription_options if workflow == 0 else window.export_text
     panel.advanced_section.toggle.setChecked(True)
     window.navigation.setFocus()
@@ -2196,6 +2204,10 @@ def test_transcription_gui_matches_cli_provider_options_and_outputs(
                 "2",
                 "--keyterm",
                 "Salom",
+                "--keyterm",
+                "Toshkent",
+                "--no-diarize",
+                "--no-verbatim",
                 "--temperature",
                 "0.5",
                 "--seed",
@@ -2213,7 +2225,9 @@ def test_transcription_gui_matches_cli_provider_options_and_outputs(
     options = window.transcription_options
     options.language.setText("uz")
     options.num_speakers.setText("2")
-    options.keyterms.setPlainText("Salom")
+    options.keyterms.setPlainText("Salom\nToshkent")
+    options.diarize.setChecked(False)
+    options.no_verbatim.setChecked(True)
     options.temperature.setText("0.5")
     options.seed.setText("42")
     options.audio_events.setChecked(False)
@@ -2453,7 +2467,8 @@ def test_transcription_credential_precedence_without_network(tmp_path: Path, mon
     received_keys = []
 
     class Client:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, headers):
+            assert headers == {"Accept-Encoding": "identity"}
             received_keys.append(api_key)
             self.speech_to_text = SimpleNamespace(convert=self.convert)
 
@@ -2482,7 +2497,13 @@ def test_transcription_credential_precedence_without_network(tmp_path: Path, mon
     window.output_subfolder.setChecked(False)
     window.project_directory = project
     if source != "project":
-        window.transcription_options.env_file.setText(str(selected))
+        monkeypatch.setattr(
+            "elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(selected), "")
+        )
+        window.navigation.setCurrentRow(5)
+        window.config_choose_credentials.click()
+        assert window.config_credentials.text() == str(selected)
+        window.navigation.setCurrentRow(0)
     window.add_paths([audio])
     window.start_job()
     assert window.worker.wait(5000)
@@ -2507,7 +2528,8 @@ def test_missing_credentials_can_be_fixed_and_retried_without_network(
     requested_models = []
 
     class Client:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, headers):
+            assert headers == {"Accept-Encoding": "identity"}
             received.append(api_key)
             self.speech_to_text = SimpleNamespace(convert=self.convert)
 
@@ -2597,7 +2619,15 @@ def test_credentials_help_is_available_from_help_menu(monkeypatch) -> None:
     action = next(action for action in help_menu.actions() if action.text() == "Credentials and API Costs")
     action.trigger()
     guidance = shown[0][2]
-    for phrase in ("ELEVENLABS_API_KEY", ".env", "Credentials file", "environment", "charges", "not saved"):
+    for phrase in (
+        "ELEVENLABS_API_KEY",
+        "sk_",
+        ".env",
+        "Configuration → Choose Credentials File",
+        "environment",
+        "charges",
+        "not saved",
+    ):
         assert phrase.lower() in guidance.lower()
     window.close()
     app.processEvents()
@@ -5406,3 +5436,293 @@ def test_workflow_controls_do_not_leak_between_workflows(tmp_path: Path, monkeyp
     assert window.pattern.text() == "clip"
     window.close()
     app.processEvents()
+
+
+def test_configuration_credentials_selection_is_shared_and_not_saved(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    selected = tmp_path / ".env"
+    monkeypatch.setattr("elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(selected), ""))
+    window.navigation.setCurrentRow(5)
+    window.config_choose_credentials.click()
+    assert window.config_credentials.text() == str(selected)
+    assert window.transcription_options.settings(tmp_path).env_file == selected
+    window.config_credentials.setText("another.env")
+    assert window.transcription_options.env_file.text() == "another.env"
+    window.close()
+    assert "another.env" not in (tmp_path / "settings.ini").read_text(encoding="utf-8")
+    app.processEvents()
+
+
+def test_transcription_options_adapt_to_available_width(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1450, 900)
+    window.show()
+    app.processEvents()
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
+    panel = window.transcription_options
+    assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 1
+    # Simulate platforms where the scrollable content remains wider than the viewport.
+    panel.setMinimumWidth(1000)
+    window.resize(800, 600)
+    app.processEvents()
+    assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 0
+    assert window.start.isVisible()
+    window.close()
+
+
+def test_transcription_settings_have_space_in_standard_window(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1020, 800)
+    window.show()
+    app.processEvents()
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
+    assert window.options_scroll.height() >= 350
+    assert window.start.isVisible()
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("cli_args", "field"),
+    [
+        (["--model", ""], "model"),
+        (["--keyterm", "invalid[term]"], "keyterms"),
+        (["--model", "scribe_v1", "--no-verbatim"], "no_verbatim"),
+    ],
+)
+def test_invalid_transcription_text_rejected_by_cli_and_gui_before_provider(
+    tmp_path: Path, monkeypatch, capsys, cli_args: list[str], field: str
+) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    def reject_provider(**kwargs):
+        pytest.fail("Invalid options must not construct a provider")
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", reject_provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", reject_provider)
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    assert main(["transcribe", str(audio), "-o", str(tmp_path / "cli"), *cli_args]) != 0
+    assert capsys.readouterr().err
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    panel = window.transcription_options
+    if field == "model":
+        panel.model.clear()
+        error = panel.model_error
+    elif field == "keyterms":
+        panel.keyterms.setPlainText("invalid[term]")
+        error = panel.keyterms_error
+    else:
+        panel.model.setText("scribe_v1")
+        panel.no_verbatim.setChecked(True)
+        error = panel.verbatim_error
+    window.add_paths([audio])
+    window.start_job()
+    assert error.text()
+    assert "preflight failed" in window.details.toPlainText().lower()
+    assert not (tmp_path / "cli").exists()
+    assert not (tmp_path / "Output").exists()
+    assert audio.read_bytes() == b"audio"
+    window.close()
+    app.processEvents()
+
+
+def test_batch_workspace_prioritizes_rows_until_settings_are_requested(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1020, 800)
+    window.show()
+    app.processEvents()
+    assert window.batch_table.height() >= 350
+    assert not window.options_scroll.isVisible()
+    assert not window.file_list.isVisible()
+    assert window.start.isVisible()
+    QTest.keyClick(window.job_settings_button, Qt.Key.Key_Space)
+    assert window.options_scroll.isVisible()
+    assert window.input_controls.isVisible()
+    window.navigation.setCurrentRow(1)
+    assert window.mode.isVisible()
+    assert not window.input_controls.isVisible()
+    window.close()
+
+
+def test_main_workflow_menus_share_settings_and_actions(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.show()
+    app.processEvents()
+
+    assert window.transcription_options.language.isVisible()
+    assert not window.options_scroll.isVisible()
+    button = window.quick_controls.currentWidget().findChild(QPushButton)
+    local_formats = button.menu().actions()[0].menu()
+    subtitle = next(action for action in local_formats.actions() if action.text() == "Subtitles (SRT)")
+    subtitle.trigger()
+    assert window.transcription_options.settings(tmp_path).additional_formats == (ArtifactFormat.SRT,)
+    window.transcription_options.local_formats[ArtifactFormat.SRT].setChecked(False)
+    assert not subtitle.isChecked()
+
+    window.show_effective.trigger()
+    assert window.details.isVisible()
+    window.navigation.setCurrentRow(2)
+    assert window.export_text.profile.isVisible()
+    assert not window.options_scroll.isVisible()
+    export_menu = window.quick_controls.currentWidget().findChild(QPushButton).menu()
+    next(action for action in export_menu.actions() if action.text() == "Transcript text (TXT)").trigger()
+    assert ArtifactFormat.TXT in window.selected_formats()
+
+    window.navigation.setCurrentRow(5)
+    assert window.preset_button.isVisible()
+    assert window.preset_button.menu() is window.preferences_menu
+    assert not window.more_actions.isVisible()
+    window.close()
+
+
+def test_batch_policies_live_in_job_settings_and_remain_visible_in_summary(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    assert window.output_subfolder.isVisible()
+    assert not window.conflict.isVisible()
+    assert not window.report_mode.isVisible()
+    window.job_settings_button.click()
+    assert window.batch_controls.isVisible()
+    assert window.conflict.isVisible()
+    window.conflict.setCurrentIndex(1)
+    window.fail_fast.setChecked(True)
+    window.job_settings_button.click()
+    assert "Replace existing" in window.job_policy_summary.text()
+    assert "Stop on error" in window.job_policy_summary.text()
+    window.navigation.setCurrentRow(4)
+    window.job_settings_button.click()
+    assert window.report_mode.isVisible()
+    assert not window.conflict.isVisible()
+    window.navigation.setCurrentRow(5)
+    assert not window.batch_controls.isVisible()
+    window.close()
+
+
+def test_batch_row_shows_short_paths_and_full_details(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = str(tmp_path / "long input folder" / "clip.flac")
+    outputs = [str(tmp_path / "long output folder" / name) for name in ("clip.json", "clip.srt")]
+    window.show_batch_plan([{"source": source, "outputs": outputs, "operation": 0, "error": "Output conflict"}])
+    for column, expected in ((0, "clip.flac"), (1, "clip.json (+1 more)")):
+        option = QStyleOptionViewItem()
+        delegate = window.batch_table.itemDelegateForColumn(column)
+        delegate.initStyleOption(option, window.batch_table.model().index(0, column))
+        assert option.text == expected
+    assert window.batch_table.item(0, 0).text() == source
+    assert not window.batch_row_details.isEnabled()
+    window.batch_table.selectRow(0)
+    assert window.batch_row_details.isEnabled()
+
+    opened = []
+
+    def inspect_dialog(dialog):
+        opened.append(dialog.findChild(type(window.details)).toPlainText())
+
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QDialog.exec", inspect_dialog)
+    window.batch_row_details.trigger()
+    window.show()
+    window.batch_table.setFocus()
+    app.processEvents()
+    QTest.keyClick(window.batch_table, Qt.Key.Key_Return)
+    assert len(opened) == 2
+    assert all(value in opened[0] for value in (source, *outputs, "Output conflict"))
+    assert opened[0] == opened[1]
+    window.close()
+    app.processEvents()
+
+
+def test_gui_and_cli_transcribe_through_real_sdk_with_uncompressed_response(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("elevenlabs")
+    import elevenlabs.client
+    import httpx
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("elevenlabs_toolkit.config.user_config_path", lambda: tmp_path / "user-config.toml")
+    audio = tmp_path / "sample.flac"
+    original = b"disposable media fixture"
+    audio.write_bytes(original)
+    credentials = tmp_path / "credentials.env"
+    credentials.write_text("ELEVENLABS_API_KEY=mock-transport-key\n", encoding="utf-8")
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        encoding = request.headers.get("accept-encoding")
+        calls.append((request.method, request.url.path, encoding, request.headers.get("xi-api-key")))
+        assert original in request.read()
+        headers = {} if encoding == "identity" else {"content-encoding": "gzip"}
+        body = json.dumps(
+            {
+                "language_code": "en",
+                "language_probability": 0.99,
+                "text": "hello",
+                "words": [
+                    {
+                        "text": "hello",
+                        "type": "word",
+                        "start": 0,
+                        "end": 1,
+                        "characters": [{"text": "h", "start": 0, "end": 0.2}],
+                    }
+                ],
+            }
+        ).encode("utf-8")
+        return httpx.Response(200, headers=headers, content=body)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    real_client = elevenlabs.client.ElevenLabs
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr(
+            elevenlabs.client, "ElevenLabs", lambda **kwargs: real_client(httpx_client=http_client, **kwargs)
+        )
+        monkeypatch.setattr(
+            "elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(credentials), "")
+        )
+        window.navigation.setCurrentRow(5)
+        window.config_choose_credentials.click()
+        window.navigation.setCurrentRow(0)
+        window.add_paths([audio])
+        window.start.click()
+        assert window.worker.wait(5000)
+        app.processEvents()
+        assert window.batch_table.item(0, 2).text() == "ok", window.batch_table.item(0, 3).text()
+        cli_output = tmp_path / "cli"
+        assert main(["transcribe", str(audio), "--env-file", str(credentials), "-o", str(cli_output)]) == 0
+
+    assert calls == [("POST", "/v1/speech-to-text", "identity", "mock-transport-key")] * 2
+    transcript = (tmp_path / "Output" / "sample.flac.transcript.json").read_bytes()
+    assert transcript == (cli_output / "sample.json").read_bytes()
+    assert json.loads(transcript)["text"] == "hello"
+    assert audio.read_bytes() == original
+    window.close()

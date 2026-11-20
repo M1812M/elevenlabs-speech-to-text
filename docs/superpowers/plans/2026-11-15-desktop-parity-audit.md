@@ -185,12 +185,17 @@ GitHub CI run 44220137184 passed all Python 3.10–3.15 quality jobs, Linux GUI 
 macOS bundle build, offline self-test and artifact upload. The downloaded CI
 artifact from an earlier run matched GitHub's SHA-256 digest and its unpacked
 macOS app passed the offline self-test locally; this is not a visible native-interaction test.
-The latest Windows job failed in GUI tests before packaging: three JSON-path
+An earlier Windows job failed in GUI tests before packaging: three JSON-path
 assertions assumed unescaped path separators, while layout checks encountered
 larger Windows minimum widths and offscreen focus. Local changes parse JSON paths,
 check actual button visibility at platform minimum sizes, and reveal the focused
-control's center in scroll areas. These changes and Windows packaging require a
-new Windows CI run.
+control's center in scroll areas. The subsequent
+[desktop fix branch run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44241772427)
+passed Windows and Linux GUI tests, the Python 3.10–3.15 quality matrix,
+and offline self-tests of both extracted desktop archives. The desktop fix
+and credential changes pass 708 tests locally. The later
+[combined changes run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44539457902)
+also passed all nine jobs, including both extracted package self-tests.
 The clean-export parity check also now reads Cyrillic JSON explicitly as UTF-8
 and verifies the converted text, avoiding reliance on the Windows default encoding.
 All 313 current desktop and launcher tests passed locally on Python 3.13 with
@@ -232,3 +237,43 @@ GUI transcription tests exercise project and explicitly selected credential
 files and environment-variable precedence with a fake SDK client; test keys
 are absent from the displayed result and persisted settings. A missing project
 credentials file can be fixed and retried with a new review, without a network call.
+
+On 2026-11-20, Configuration gained a credentials-file picker synchronized
+with Transcribe; automated tests check both controls, confirm the path is not
+persisted, and run a fake-SDK transcription after selecting the file through
+Configuration, including the environment-variable precedence case. Transcription settings were split into recognition, output,
+and advanced groups. An offscreen main-window test checks the recognition and
+output groups switch between two columns and one column as the window is
+resized. The 711-test suite and the rebuilt macOS app's offline self-test passed
+locally. Native file-manager behavior and native verification of the new layout
+remain outstanding; the earlier report that the output folder did not open is
+not considered resolved solely by mocked tests.
+A subsequent offscreen visual inspection showed the enlarged maximum height
+alone did not allocate enough space to transcription settings. The panel now
+receives at least 350 pixels inside the main scrolling area, with the processing
+buttons outside it; a regression test and the existing small-window and keyboard
+checks pass. The full suite passed 712 tests, and the rebuilt Mac bundle passed
+its offline self-test. Native visual verification remains outstanding.
+The 2026-11-20 rebuilt macOS archive was also extracted into a temporary
+folder and its packaged application passed the offline self-test. This does not
+verify Finder integration or visible desktop interaction.
+The five local transcription output comparisons now also exercise disabling
+speaker identification, enabling filler removal, and multiple keyterms; they
+compare the full fake-provider request options and resulting bytes with the CLI.
+Windows CI for commit 0513007 revealed that a scroll area's content may retain
+its wide minimum width after the window narrows, preventing the transcription
+layout from returning to one column. The layout now uses the visible main
+viewport width. A regression simulates content wider than the viewport; local
+keyboard and small-window checks pass. The [subsequent CI run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44720692490)
+passed all nine jobs, including Windows GUI tests and the extracted Windows
+package self-test.
+
+The batch workspace redesign was exercised on a native Cocoa display on
+macOS 27.2.1. At the requested narrow and wide sizes (620 × 390 and
+1250 × 820), the primary action stayed inside the window and the batch table
+had no horizontal overflow. Keyboard workflow navigation, a no-write SRT
+preview, conversion with unchanged input, persistence of a disposable preset,
+and visibility of the Configuration credential picker passed. The native
+file-manager API accepted the selected output folder URL. The packaged app
+also passed its native offline self-test. These checks used temporary inputs
+and made no API requests.
