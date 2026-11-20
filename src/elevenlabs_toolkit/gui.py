@@ -11,7 +11,7 @@ from dataclasses import replace as replace_settings
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QByteArray, QSettings, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDragMoveEvent, QDropEvent, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -889,6 +889,7 @@ class MainWindow(QMainWindow):
         convert_layout.addWidget(self.mode)
         convert_layout.addStretch(1)
         self.transcription_options = TranscriptionPanel()
+        self.main_scroll.viewport().installEventFilter(self)
         self.options.addWidget(self.transcription_options)
         self.options.addWidget(convert)
         export_panel = QWidget()
@@ -1893,6 +1894,11 @@ class MainWindow(QMainWindow):
             self.details.setPlainText(f"Batch report saved: {name}")
         except (OSError, ValueError) as exc:
             self.details.setPlainText(f"Could not save batch report: {exc}")
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.main_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            self.transcription_options.set_available_width(self.main_scroll.viewport().width())
+        return super().eventFilter(watched, event)
 
     def open_output_folder(self) -> None:
         selected = self.batch_table.selectedItems()

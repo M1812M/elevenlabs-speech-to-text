@@ -591,9 +591,8 @@ class TranscriptionPanel(TextOptionsPanel):
         assert isinstance(layout, QFormLayout)
         layout.insertRow(0, group)
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        wide = self.width() >= 850
+    def set_available_width(self, width: int) -> None:
+        wide = width >= 850
         self.recognition_grid.addWidget(self.output_group, 0 if wide else 1, 1 if wide else 0)
         self.recognition_grid.addWidget(self.advanced_group, 1 if wide else 2, 0, 1, 2 if wide else 1)
 

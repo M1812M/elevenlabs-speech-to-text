@@ -5447,6 +5447,8 @@ def test_transcription_options_adapt_to_available_width(monkeypatch) -> None:
     app.processEvents()
     panel = window.transcription_options
     assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 1
+    # Simulate platforms where the scrollable content remains wider than the viewport.
+    panel.setMinimumWidth(1000)
     window.resize(800, 600)
     app.processEvents()
     assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 0

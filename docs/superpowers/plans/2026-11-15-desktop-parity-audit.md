@@ -260,3 +260,8 @@ verify Finder integration or visible desktop interaction.
 The five local transcription output comparisons now also exercise disabling
 speaker identification, enabling filler removal, and multiple keyterms; they
 compare the full fake-provider request options and resulting bytes with the CLI.
+Windows CI for commit 0513007 revealed that a scroll area's content may retain
+its wide minimum width after the window narrows, preventing the transcription
+layout from returning to one column. The layout now uses the visible main
+viewport width. A regression simulates content wider than the viewport; local
+keyboard and small-window checks pass. Windows CI must confirm the fix.
