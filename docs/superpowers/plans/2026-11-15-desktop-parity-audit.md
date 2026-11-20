@@ -264,4 +264,6 @@ Windows CI for commit 0513007 revealed that a scroll area's content may retain
 its wide minimum width after the window narrows, preventing the transcription
 layout from returning to one column. The layout now uses the visible main
 viewport width. A regression simulates content wider than the viewport; local
-keyboard and small-window checks pass. Windows CI must confirm the fix.
+keyboard and small-window checks pass. The [subsequent CI run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44720692490)
+passed all nine jobs, including Windows GUI tests and the extracted Windows
+package self-test.

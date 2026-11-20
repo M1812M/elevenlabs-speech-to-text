@@ -450,7 +450,7 @@ Command-Shift-Period in the file picker to show hidden `.env` files.
 The local macOS build is an unnotarized development build. Build on the
 destination platform.
 
-The [combined desktop and credential run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44539457902)
+The [desktop validation run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44720692490)
 passed Linux and Windows GUI checks and tested the extracted macOS and Windows
 packages offline. The local macOS app also opens, resizes, and keeps its bottom
 buttons visible in a small window.
