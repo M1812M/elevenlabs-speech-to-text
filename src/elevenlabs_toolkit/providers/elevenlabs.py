@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import zlib
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -333,6 +334,11 @@ def _classified_error(exc: Exception) -> ProviderError:
         return ProviderCredentialError(
             "The ElevenLabs API key lacks permission for this request. "
             "Enable Speech to Text access for the key in ElevenLabs, then retry."
+        )
+    if isinstance(exc, zlib.error) or isinstance(exc.__cause__, zlib.error):
+        return ProviderResponseError(
+            "Could not read the ElevenLabs response because its compression was invalid. "
+            "Check your ElevenLabs usage before retrying this file."
         )
     message = str(exc) or type(exc).__name__
     if status in {401, 403}:

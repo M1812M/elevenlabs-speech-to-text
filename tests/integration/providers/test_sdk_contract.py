@@ -107,3 +107,29 @@ def test_transcription_requests_an_uncompressed_response(tmp_path: Path, monkeyp
         client.close()
     assert result["text"] == "hello"
     assert seen == ["identity"]
+
+
+def test_unreadable_compressed_response_explains_transcription_failure(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("elevenlabs")
+    import elevenlabs.client
+    import httpx
+
+    from elevenlabs_toolkit.providers import ProviderResponseError
+
+    real_client = elevenlabs.client.ElevenLabs
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("accept-encoding"))
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(b"plain response"))
+
+    audio = tmp_path / "sample.flac"
+    audio.write_bytes(b"media")
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr(
+            elevenlabs.client, "ElevenLabs", lambda **kwargs: real_client(httpx_client=http_client, **kwargs)
+        )
+        with pytest.raises(ProviderResponseError, match="Could not read the ElevenLabs response"):
+            ElevenLabsProvider(api_key="test-key").transcribe(audio, TranscriptionOptions())
+
+    assert calls == ["identity"]
