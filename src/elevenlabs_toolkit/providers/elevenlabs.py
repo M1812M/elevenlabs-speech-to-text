@@ -114,7 +114,7 @@ class ElevenLabsProvider:
             environ=self._environ,
         )
         try:
-            return ElevenLabs(api_key=api_key)
+            return ElevenLabs(api_key=api_key, headers={"Accept-Encoding": "identity"})
         except Exception as exc:
             classified = _classified_error(exc)
             if type(classified) is ProviderError:

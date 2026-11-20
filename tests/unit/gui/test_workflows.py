@@ -1609,9 +1609,15 @@ def test_focus_reveals_center_of_wide_control(monkeypatch) -> None:
     window.resize(800, 400)
     window.show()
     window.navigation.setCurrentRow(0)
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
     field = window.transcription_options.model
     field.setMinimumWidth(1400)
-    app.processEvents()
+    for _ in range(20):
+        app.processEvents()
+        if window.options_scroll.horizontalScrollBar().maximum() > 0:
+            break
+    assert window.options_scroll.horizontalScrollBar().maximum() > 0
     field.setFocus()
     app.processEvents()
     window.reveal_focused_control()
@@ -1667,6 +1673,8 @@ def test_keyboard_can_reach_visible_expanded_advanced_options(monkeypatch, workf
     window.resize(600, 300)
     window.show()
     window.navigation.setCurrentRow(workflow)
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
     panel = window.transcription_options if workflow == 0 else window.export_text
     panel.advanced_section.toggle.setChecked(True)
     window.navigation.setFocus()
@@ -2459,7 +2467,8 @@ def test_transcription_credential_precedence_without_network(tmp_path: Path, mon
     received_keys = []
 
     class Client:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, headers):
+            assert headers == {"Accept-Encoding": "identity"}
             received_keys.append(api_key)
             self.speech_to_text = SimpleNamespace(convert=self.convert)
 
@@ -2519,7 +2528,8 @@ def test_missing_credentials_can_be_fixed_and_retried_without_network(
     requested_models = []
 
     class Client:
-        def __init__(self, *, api_key):
+        def __init__(self, *, api_key, headers):
+            assert headers == {"Accept-Encoding": "identity"}
             received.append(api_key)
             self.speech_to_text = SimpleNamespace(convert=self.convert)
 
@@ -5445,6 +5455,8 @@ def test_transcription_options_adapt_to_available_width(monkeypatch) -> None:
     window.resize(1450, 900)
     window.show()
     app.processEvents()
+    window.job_settings_button.setChecked(True)
+    app.processEvents()
     panel = window.transcription_options
     assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 1
     # Simulate platforms where the scrollable content remains wider than the viewport.
@@ -5462,6 +5474,8 @@ def test_transcription_settings_have_space_in_standard_window(monkeypatch) -> No
     window = MainWindow()
     window.resize(1020, 800)
     window.show()
+    app.processEvents()
+    window.job_settings_button.setChecked(True)
     app.processEvents()
     assert window.options_scroll.height() >= 350
     assert window.start.isVisible()
@@ -5514,5 +5528,124 @@ def test_invalid_transcription_text_rejected_by_cli_and_gui_before_provider(
     assert not (tmp_path / "cli").exists()
     assert not (tmp_path / "Output").exists()
     assert audio.read_bytes() == b"audio"
+    window.close()
+    app.processEvents()
+
+
+def test_batch_workspace_prioritizes_rows_until_settings_are_requested(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1020, 800)
+    window.show()
+    app.processEvents()
+    assert window.batch_table.height() >= 350
+    assert not window.options_scroll.isVisible()
+    assert not window.file_list.isVisible()
+    assert window.start.isVisible()
+    QTest.keyClick(window.job_settings_button, Qt.Key.Key_Space)
+    assert window.options_scroll.isVisible()
+    assert window.input_controls.isVisible()
+    window.navigation.setCurrentRow(1)
+    assert window.mode.isVisible()
+    assert not window.input_controls.isVisible()
+    window.close()
+
+
+def test_main_workflow_menus_share_settings_and_actions(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.project_directory = tmp_path
+    window.show()
+    app.processEvents()
+
+    assert window.transcription_options.language.isVisible()
+    assert not window.options_scroll.isVisible()
+    button = window.quick_controls.currentWidget().findChild(QPushButton)
+    local_formats = button.menu().actions()[0].menu()
+    subtitle = next(action for action in local_formats.actions() if action.text() == "Subtitles (SRT)")
+    subtitle.trigger()
+    assert window.transcription_options.settings(tmp_path).additional_formats == (ArtifactFormat.SRT,)
+    window.transcription_options.local_formats[ArtifactFormat.SRT].setChecked(False)
+    assert not subtitle.isChecked()
+
+    window.show_effective.trigger()
+    assert window.details.isVisible()
+    window.navigation.setCurrentRow(2)
+    assert window.export_text.profile.isVisible()
+    assert not window.options_scroll.isVisible()
+    export_menu = window.quick_controls.currentWidget().findChild(QPushButton).menu()
+    next(action for action in export_menu.actions() if action.text() == "Transcript text (TXT)").trigger()
+    assert ArtifactFormat.TXT in window.selected_formats()
+
+    window.navigation.setCurrentRow(5)
+    assert window.preset_button.isVisible()
+    assert window.preset_button.menu() is window.preferences_menu
+    assert not window.more_actions.isVisible()
+    window.close()
+
+
+def test_batch_policies_live_in_job_settings_and_remain_visible_in_summary(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    assert window.output_subfolder.isVisible()
+    assert not window.conflict.isVisible()
+    assert not window.report_mode.isVisible()
+    window.job_settings_button.click()
+    assert window.batch_controls.isVisible()
+    assert window.conflict.isVisible()
+    window.conflict.setCurrentIndex(1)
+    window.fail_fast.setChecked(True)
+    window.job_settings_button.click()
+    assert "Replace existing" in window.job_policy_summary.text()
+    assert "Stop on error" in window.job_policy_summary.text()
+    window.navigation.setCurrentRow(4)
+    window.job_settings_button.click()
+    assert window.report_mode.isVisible()
+    assert not window.conflict.isVisible()
+    window.navigation.setCurrentRow(5)
+    assert not window.batch_controls.isVisible()
+    window.close()
+
+
+def test_batch_row_shows_short_paths_and_full_details(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    source = str(tmp_path / "long input folder" / "clip.flac")
+    outputs = [str(tmp_path / "long output folder" / name) for name in ("clip.json", "clip.srt")]
+    window.show_batch_plan([{"source": source, "outputs": outputs, "operation": 0, "error": "Output conflict"}])
+    for column, expected in ((0, "clip.flac"), (1, "clip.json (+1 more)")):
+        option = QStyleOptionViewItem()
+        delegate = window.batch_table.itemDelegateForColumn(column)
+        delegate.initStyleOption(option, window.batch_table.model().index(0, column))
+        assert option.text == expected
+    assert window.batch_table.item(0, 0).text() == source
+    assert not window.batch_row_details.isEnabled()
+    window.batch_table.selectRow(0)
+    assert window.batch_row_details.isEnabled()
+
+    opened = []
+
+    def inspect_dialog(dialog):
+        opened.append(dialog.findChild(type(window.details)).toPlainText())
+
+    monkeypatch.setattr("elevenlabs_toolkit.gui.QDialog.exec", inspect_dialog)
+    window.batch_row_details.trigger()
+    window.show()
+    window.batch_table.setFocus()
+    app.processEvents()
+    QTest.keyClick(window.batch_table, Qt.Key.Key_Return)
+    assert len(opened) == 2
+    assert all(value in opened[0] for value in (source, *outputs, "Output conflict"))
+    assert opened[0] == opened[1]
     window.close()
     app.processEvents()

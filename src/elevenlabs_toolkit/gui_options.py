@@ -522,7 +522,6 @@ class TranscriptionPanel(TextOptionsPanel):
         self.delay = QLineEdit("0")
         for label, control in (
             ("Model", model_control),
-            ("Language code", self.language),
             ("Timestamps", timestamps_control),
             ("Speaker count", self.num_speakers),
             ("Seed", self.seed),

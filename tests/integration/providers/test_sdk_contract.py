@@ -78,3 +78,32 @@ def test_locked_sdk_api_error_exposes_retry_headers_directly(tmp_path: Path) -> 
         ElevenLabsProvider(client=Client()).transcribe(source, TranscriptionOptions())
 
     assert caught.value.retry_after_seconds == 2.5
+
+
+def test_transcription_requests_an_uncompressed_response(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("elevenlabs")
+    import elevenlabs.client
+    import httpx
+
+    real_client = elevenlabs.client.ElevenLabs
+    seen = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("accept-encoding"))
+        # Model a response path that mishandles compressed content. It returns
+        # plain JSON when the client requests identity encoding.
+        body = b'{"language_code":"en","language_probability":0.99,"text":"hello","words":[]}'
+        headers = {} if seen[-1] == "identity" else {"content-encoding": "gzip"}
+        return httpx.Response(200, headers=headers, content=body)
+
+    transport = httpx.MockTransport(handle)
+    client = httpx.Client(transport=transport)
+    monkeypatch.setattr(elevenlabs.client, "ElevenLabs", lambda **kwargs: real_client(httpx_client=client, **kwargs))
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"fake audio")
+    try:
+        result = ElevenLabsProvider(api_key="test-key").transcribe(audio, TranscriptionOptions())
+    finally:
+        client.close()
+    assert result["text"] == "hello"
+    assert seen == ["identity"]

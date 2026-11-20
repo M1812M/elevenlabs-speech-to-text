@@ -336,30 +336,40 @@ project folder: it uses the project `.venv` if the current Python does not
 have PySide6 installed.
 
 Choose Transcribe, Convert Script, Export, Clean, Inspect, or Configuration
-in the sidebar. Add files or folders with the buttons or drag and drop.
+in the sidebar. Add files or folders with the buttons or drop them onto the
+batch table. Open **Inputs** to review or remove the original selections.
+Use **Job Settings…** for folder filters and workflow options, and **Show
+Details** to expand the full batch message or preview. In Transcribe, language
+and **Additional Formats** are available above the table. In Export, use the
+profile and **Output Formats** controls there.
 The selected project configuration folder is remembered across launches and
 is included in named presets. If a preset's project folder is unavailable,
 choose or restore the folder before loading it.
-Folder filters apply within selected folders. Preview lists planned destinations
+In **Job Settings…**, **Input selection** controls folder discovery and
+**Batch behavior** controls conflicts, stop-on-error, report detail, and
+review. Folder filters apply within selected folders. Preview lists planned destinations
 and API requests, including existing-file conflicts under the error policy.
-For Transcribe and Export, **Review before running** adds a
+For Transcribe and Export, **Batch behavior → Review before running** adds a
 confirmation step before the planned job starts.
 Changing inputs or settings marks a displayed preview as out of date; run
 Preview again to check the new plan. Starting a batch always plans it again.
 
-The batch table lists discovered inputs, output paths, statuses, and errors.
+The batch table shows filenames, output names, and statuses. Open a row with
+Enter or double-click, or use **More Actions → View Selected File Details…**,
+to see the full paths and any error message.
 The preview, stop, and start buttons stay visible at the bottom while the main
 panel scrolls in a smaller window.
 Use **Open Output Folder** to locate the shared output folder, or select a row
-first when the batch has several destinations. Use **Save Batch Report** to save the displayed rows as JSON. The report
+first when the batch has several destinations. Use **More Actions → Save Batch Report…** to save the displayed rows as JSON. The report
 does not overwrite an existing file. **Stop After File** stops before
 the next file; rows not processed are marked **Not run**.
 
-The **Preferences** menu saves, loads and deletes named presets, and resets settings.
+**Configuration → Presets** and the **Preferences** menu let you save, load,
+and delete named presets and reset settings.
 Presets contain workflow settings and the selected project folder, but never
 the credentials-file field or API key. **Reset to Defaults** clears the current
 credentials-file selection as well as workflow settings; saved presets remain.
-**Show Effective Settings** displays the
+**More Actions → Show Effective Settings** displays the
 selected profile's settings, workflow overrides, effective values and the source
 of each value (default, user, project, profile or workflow override).
 

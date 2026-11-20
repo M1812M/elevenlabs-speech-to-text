@@ -267,3 +267,13 @@ viewport width. A regression simulates content wider than the viewport; local
 keyboard and small-window checks pass. The [subsequent CI run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44720692490)
 passed all nine jobs, including Windows GUI tests and the extracted Windows
 package self-test.
+
+The batch workspace redesign was exercised on a native Cocoa display on
+macOS 27.2.1. At the requested narrow and wide sizes (620 × 390 and
+1250 × 820), the primary action stayed inside the window and the batch table
+had no horizontal overflow. Keyboard workflow navigation, a no-write SRT
+preview, conversion with unchanged input, persistence of a disposable preset,
+and visibility of the Configuration credential picker passed. The native
+file-manager API accepted the selected output folder URL. The packaged app
+also passed its native offline self-test. These checks used temporary inputs
+and made no API requests.

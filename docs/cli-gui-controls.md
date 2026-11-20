@@ -12,20 +12,23 @@ it checks coverage, not the accuracy of each mapping.
 | CLI | Desktop control or equivalent |
 | --- | --- |
 | `--help`, `--version` | Help → Using the Toolkit; Help → About ElevenLabs Toolkit. The GUI help is a summary, not the CLI help text. |
-| `--json`, `--quiet`, `--verbose` | Result selector: JSON, Quiet, Verbose. Quiet suppresses progress updates but keeps the final GUI result visible. |
+| `--json`, `--quiet`, `--verbose` | Job Settings → Batch behavior → Result detail: JSON, Quiet, Verbose. Quiet suppresses progress updates but keeps the final GUI result visible. |
 | Positional files and folders | Add Files, Add Folder, or drag and drop. The CLI defaults to `media` when omitted; the GUI requires a selection. |
 | Positional glob; `--glob` | Choose Glob in the folder filter and enter the pattern. Directly selected files are not filtered. |
 | `--regex` | Choose Regular expression and enter the pattern matched against paths relative to each selected folder. |
 | `--recursive`, `--no-recursive` | Include subfolders. |
 | `--output-dir` | Clear Use Output subfolder, then enter or browse to an output folder. Leave it blank to save beside sources. New GUI workflows default to an `Output` subfolder; the CLI defaults to `media`. |
-| `--on-conflict` | Conflict selector: Skip existing, Replace existing, Report conflict, or Choose a new name. Rename is unavailable for transcription, matching the CLI's supported policies. The GUI defaults to Skip. |
+| `--on-conflict` | Job Settings → Batch behavior → Existing outputs: Skip existing, Replace existing, Report conflict, or Choose a new name. Rename is unavailable for transcription, matching the CLI's supported policies. The GUI defaults to Skip. |
 | `--dry-run` | Preview. It plans paths, conflicts and API requests without writing outputs or making requests. Preview Content separately renders the first supported text or subtitle output without writing. |
-| `--fail-fast` | Stop on error. |
+| `--fail-fast` | Job Settings → Batch behavior → Stop on error. |
 | `--include-generated` | Include generated JSON in Export, Clean and Inspect. |
 
 ## Transcribe
 
-Choose **Transcribe**. JSON is always produced; additional formats are optional.
+Choose **Transcribe**. Language and **Additional Formats** are above the batch
+table. JSON is always produced. **Additional Formats** groups locally rendered
+files and files requested from ElevenLabs. Open **Job Settings…** for the
+remaining transcription options.
 
 | CLI | Desktop control |
 | --- | --- |
@@ -62,7 +65,8 @@ Choose **Transcribe**. JSON is always produced; additional formats are optional.
 
 ## Export
 
-Choose **Export** and select one or more format checkboxes.
+Choose **Export** and select one or more formats through **Output Formats**.
+The profile is beside that menu. Other export options are in **Job Settings…**.
 
 | CLI | Desktop control |
 | --- | --- |
@@ -87,7 +91,7 @@ using a custom folder, the selected inputs share one combined file.
 | `clean --language uzbek` | Clean uses Uzbek editorial rules; it also offers Profile, Output script and token replacements. |
 | `inspect` | Inspect displays read-only transcript summaries and validation errors. |
 | `config show --profile` | Configuration → Profile and effective configuration; Choose Project Folder sets the configuration context. |
-| `wizard` | Transcribe or Export with Review before running provides the preview-and-confirm flow. Its interaction and defaults differ from the terminal wizard. |
+| `wizard` | Transcribe or Export with Job Settings → Batch behavior → Review before running provides the preview-and-confirm flow. Its interaction and defaults differ from the terminal wizard. |
 
 The GUI also offers batch status, retry, saved reports, persistent preferences,
 named presets and per-workflow selections. See the desktop section of the
