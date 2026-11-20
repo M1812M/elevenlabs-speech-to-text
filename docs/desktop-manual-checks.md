@@ -21,9 +21,16 @@ or paid transcription request is needed.
 6. Change a setting, save a named preset, close and reopen the app, and load
    the preset. Verify the value and window size are restored. Test **Reset to
    Defaults**, then delete the disposable preset.
-7. In **Transcribe**, open **Help → Credentials and API Costs** and check that
-   credential instructions and the charge notice are legible. Do not start a
-   transcription unless you intend to make a paid request.
+7. In **Configuration**, select a disposable credentials file using **Choose
+   Credentials File…**. Confirm its path appears there and in Transcribe’s
+   advanced recognition settings. Close and reopen the app and check that the
+   selected path was not saved. Do not use a real key for this check.
+8. In **Transcribe**, widen and narrow the window. Confirm recognition and
+   additional outputs appear side by side when there is room, return to a
+   single column at narrower widths, and remain usable by keyboard. Open
+   **Help → Credentials and API Costs** and check that credential instructions
+   and the charge notice are legible. Do not start a transcription unless you
+   intend to make a paid request.
 
 For Windows, repeat after extracting the entire packaged application folder;
 the executable depends on files in that folder. For macOS, open the extracted

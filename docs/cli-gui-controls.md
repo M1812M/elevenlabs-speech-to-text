@@ -41,7 +41,7 @@ Choose **Transcribe**. JSON is always produced; additional formats are optional.
 | `--no-verbatim` | Remove fillers and false starts. |
 | `--seed` | Seed. |
 | `--temperature` | Temperature. |
-| `--env-file` | Credentials file. The selection is not saved in settings or presets. |
+| `--env-file` | Configuration → Choose Credentials File…, or Transcribe → Advanced recognition and requests → Credentials file. The selection is shared and is not saved in settings or presets. |
 | `--retries` | Retries. |
 | `--retry-backoff` | Retry backoff (seconds). |
 | `--request-delay` | Request delay (seconds). |

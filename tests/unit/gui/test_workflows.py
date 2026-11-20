@@ -2196,6 +2196,10 @@ def test_transcription_gui_matches_cli_provider_options_and_outputs(
                 "2",
                 "--keyterm",
                 "Salom",
+                "--keyterm",
+                "Toshkent",
+                "--no-diarize",
+                "--no-verbatim",
                 "--temperature",
                 "0.5",
                 "--seed",
@@ -2213,7 +2217,9 @@ def test_transcription_gui_matches_cli_provider_options_and_outputs(
     options = window.transcription_options
     options.language.setText("uz")
     options.num_speakers.setText("2")
-    options.keyterms.setPlainText("Salom")
+    options.keyterms.setPlainText("Salom\nToshkent")
+    options.diarize.setChecked(False)
+    options.no_verbatim.setChecked(True)
     options.temperature.setText("0.5")
     options.seed.setText("42")
     options.audio_events.setChecked(False)
@@ -2482,7 +2488,13 @@ def test_transcription_credential_precedence_without_network(tmp_path: Path, mon
     window.output_subfolder.setChecked(False)
     window.project_directory = project
     if source != "project":
-        window.transcription_options.env_file.setText(str(selected))
+        monkeypatch.setattr(
+            "elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(selected), "")
+        )
+        window.navigation.setCurrentRow(5)
+        window.config_choose_credentials.click()
+        assert window.config_credentials.text() == str(selected)
+        window.navigation.setCurrentRow(0)
     window.add_paths([audio])
     window.start_job()
     assert window.worker.wait(5000)
@@ -5406,3 +5418,49 @@ def test_workflow_controls_do_not_leak_between_workflows(tmp_path: Path, monkeyp
     assert window.pattern.text() == "clip"
     window.close()
     app.processEvents()
+
+
+def test_configuration_credentials_selection_is_shared_and_not_saved(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    selected = tmp_path / ".env"
+    monkeypatch.setattr("elevenlabs_toolkit.gui_options.QFileDialog.getOpenFileName", lambda *args: (str(selected), ""))
+    window.navigation.setCurrentRow(5)
+    window.config_choose_credentials.click()
+    assert window.config_credentials.text() == str(selected)
+    assert window.transcription_options.settings(tmp_path).env_file == selected
+    window.config_credentials.setText("another.env")
+    assert window.transcription_options.env_file.text() == "another.env"
+    window.close()
+    assert "another.env" not in (tmp_path / "settings.ini").read_text(encoding="utf-8")
+    app.processEvents()
+
+
+def test_transcription_options_adapt_to_available_width(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1450, 900)
+    window.show()
+    app.processEvents()
+    panel = window.transcription_options
+    assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 1
+    window.resize(800, 600)
+    app.processEvents()
+    assert panel.recognition_grid.getItemPosition(panel.recognition_grid.indexOf(panel.output_group))[1] == 0
+    assert window.start.isVisible()
+    window.close()
+
+
+def test_transcription_settings_have_space_in_standard_window(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1020, 800)
+    window.show()
+    app.processEvents()
+    assert window.options_scroll.height() >= 350
+    assert window.start.isVisible()
+    window.close()

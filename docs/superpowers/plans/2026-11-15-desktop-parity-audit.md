@@ -237,3 +237,26 @@ GUI transcription tests exercise project and explicitly selected credential
 files and environment-variable precedence with a fake SDK client; test keys
 are absent from the displayed result and persisted settings. A missing project
 credentials file can be fixed and retried with a new review, without a network call.
+
+On 2026-11-20, Configuration gained a credentials-file picker synchronized
+with Transcribe; automated tests check both controls, confirm the path is not
+persisted, and run a fake-SDK transcription after selecting the file through
+Configuration, including the environment-variable precedence case. Transcription settings were split into recognition, output,
+and advanced groups. An offscreen main-window test checks the recognition and
+output groups switch between two columns and one column as the window is
+resized. The 711-test suite and the rebuilt macOS app's offline self-test passed
+locally. Native file-manager behavior and native verification of the new layout
+remain outstanding; the earlier report that the output folder did not open is
+not considered resolved solely by mocked tests.
+A subsequent offscreen visual inspection showed the enlarged maximum height
+alone did not allocate enough space to transcription settings. The panel now
+receives at least 350 pixels inside the main scrolling area, with the processing
+buttons outside it; a regression test and the existing small-window and keyboard
+checks pass. The full suite passed 712 tests, and the rebuilt Mac bundle passed
+its offline self-test. Native visual verification remains outstanding.
+The 2026-11-20 rebuilt macOS archive was also extracted into a temporary
+folder and its packaged application passed the offline self-test. This does not
+verify Finder integration or visible desktop interaction.
+The five local transcription output comparisons now also exercise disabling
+speaker identification, enabling filler removal, and multiple keyterms; they
+compare the full fake-provider request options and resulting bytes with the CLI.

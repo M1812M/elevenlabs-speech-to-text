@@ -434,8 +434,11 @@ QT_QPA_PLATFORM=offscreen 'dist/ElevenLabs Toolkit.app/Contents/MacOS/ElevenLabs
 ```
 
 Open the resulting app from Finder. The app defaults to your home directory as
-its configuration context; use Configuration to select a project folder and
-Transcribe's **Credentials file** field to select an existing `.env` file.
+its configuration context; use **Configuration → Choose Project Folder** to
+select a project folder. To use a different credentials file, choose
+**Configuration → Choose Credentials File…** and select the existing `.env`
+file. The same selection is also available in Transcribe’s advanced recognition
+settings.
 The app's **Help → Credentials and API Costs** menu also explains this setup.
 The file should contain `ELEVENLABS_API_KEY=your-key` on its own line. Use the
 secret starting with `sk_` shown when you create or rotate the key. Leave
