@@ -5466,3 +5466,53 @@ def test_transcription_settings_have_space_in_standard_window(monkeypatch) -> No
     assert window.options_scroll.height() >= 350
     assert window.start.isVisible()
     window.close()
+
+
+@pytest.mark.parametrize(
+    ("cli_args", "field"),
+    [
+        (["--model", ""], "model"),
+        (["--keyterm", "invalid[term]"], "keyterms"),
+        (["--model", "scribe_v1", "--no-verbatim"], "no_verbatim"),
+    ],
+)
+def test_invalid_transcription_text_rejected_by_cli_and_gui_before_provider(
+    tmp_path: Path, monkeypatch, capsys, cli_args: list[str], field: str
+) -> None:
+    from elevenlabs_toolkit import providers
+    from elevenlabs_toolkit.cli import transcribe
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.chdir(tmp_path)
+
+    def reject_provider(**kwargs):
+        pytest.fail("Invalid options must not construct a provider")
+
+    monkeypatch.setattr(providers, "ElevenLabsProvider", reject_provider)
+    monkeypatch.setattr(transcribe, "ElevenLabsProvider", reject_provider)
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    assert main(["transcribe", str(audio), "-o", str(tmp_path / "cli"), *cli_args]) != 0
+    assert capsys.readouterr().err
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    panel = window.transcription_options
+    if field == "model":
+        panel.model.clear()
+        error = panel.model_error
+    elif field == "keyterms":
+        panel.keyterms.setPlainText("invalid[term]")
+        error = panel.keyterms_error
+    else:
+        panel.model.setText("scribe_v1")
+        panel.no_verbatim.setChecked(True)
+        error = panel.verbatim_error
+    window.add_paths([audio])
+    window.start_job()
+    assert error.text()
+    assert "preflight failed" in window.details.toPlainText().lower()
+    assert not (tmp_path / "cli").exists()
+    assert not (tmp_path / "Output").exists()
+    assert audio.read_bytes() == b"audio"
+    window.close()
+    app.processEvents()
