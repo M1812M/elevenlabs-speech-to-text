@@ -133,3 +133,24 @@ def test_unreadable_compressed_response_explains_transcription_failure(tmp_path:
             ElevenLabsProvider(api_key="test-key").transcribe(audio, TranscriptionOptions())
 
     assert calls == ["identity"]
+
+
+def test_sdk_does_not_retry_outside_toolkit_request_budget(tmp_path: Path) -> None:
+    pytest.importorskip("elevenlabs")
+    import httpx
+    from elevenlabs.client import ElevenLabs
+
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.method)
+        return httpx.Response(503, headers={"retry-after": "0.01"}, json={"detail": "Unavailable"})
+
+    audio = tmp_path / "retry-check.flac"
+    audio.write_bytes(b"test audio")
+    with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+        sdk = ElevenLabs(api_key="test-key", httpx_client=transport)
+        with pytest.raises(ProviderTransientError):
+            ElevenLabsProvider(client=sdk).transcribe(audio, TranscriptionOptions())
+
+    assert requests == ["POST"]

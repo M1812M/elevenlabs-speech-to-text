@@ -92,7 +92,8 @@ class ElevenLabsProvider:
         try:
             with stream:
                 client = self.client
-                result = client.speech_to_text.convert(file=stream, **kwargs)
+                # Keep the SDK from exceeding the Toolkit's previewed request budget.
+                result = client.speech_to_text.convert(file=stream, request_options={"max_retries": 0}, **kwargs)
         except ProviderError:
             raise
         except Exception as exc:  # SDK exception types must not leak into this boundary.
