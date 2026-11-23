@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -447,8 +448,17 @@ class TextOptionsPanel(QWidget):
 class TranscriptionPanel(TextOptionsPanel):
     def __init__(self) -> None:
         super().__init__(advanced=True)
-        group = QGroupBox("Recognition and additional outputs")
-        form = QFormLayout(group)
+        group = QWidget()
+        self.recognition_grid = QGridLayout(group)
+        self.recognition_group = QGroupBox("Recognition")
+        form = QFormLayout(self.recognition_group)
+        self.output_group = QGroupBox("Additional outputs")
+        output_form = QFormLayout(self.output_group)
+        self.advanced_group = QGroupBox("Advanced recognition and requests")
+        advanced_form = QFormLayout(self.advanced_group)
+        self.recognition_grid.addWidget(self.recognition_group, 0, 0)
+        self.recognition_grid.addWidget(self.output_group, 1, 0)
+        self.recognition_grid.addWidget(self.advanced_group, 2, 0)
         self.model = QLineEdit("scribe_v2")
         self.language = QLineEdit()
         self.language.setPlaceholderText("Auto detect")
@@ -496,7 +506,8 @@ class TranscriptionPanel(TextOptionsPanel):
         self.env_file = QLineEdit()
         self.env_file.setPlaceholderText("Project .env")
         self.env_file.setToolTip(
-            "Select an existing dotenv file containing ELEVENLABS_API_KEY; the path is not saved. "
+            "Select a .env file containing your secret API key (ELEVENLABS_API_KEY). "
+            "The file path is not saved. "
             "See Help → Credentials and API Costs for setup."
         )
         self.choose_credentials = QPushButton("Browse…")
@@ -511,7 +522,6 @@ class TranscriptionPanel(TextOptionsPanel):
         self.delay = QLineEdit("0")
         for label, control in (
             ("Model", model_control),
-            ("Language code", self.language),
             ("Timestamps", timestamps_control),
             ("Speaker count", self.num_speakers),
             ("Seed", self.seed),
@@ -530,14 +540,27 @@ class TranscriptionPanel(TextOptionsPanel):
                 "Retry backoff (seconds)": ("backoff", float, False, 0, None),
                 "Request delay (seconds)": ("delay", float, False, 0, None),
             }
+            target_form = (
+                advanced_form
+                if label
+                in {
+                    "Seed",
+                    "Temperature",
+                    "Credentials file",
+                    "Retries",
+                    "Retry backoff (seconds)",
+                    "Request delay (seconds)",
+                }
+                else form
+            )
             if label in numeric:
                 name, converter, optional, minimum, maximum = numeric[label]
                 assert isinstance(control, QLineEdit)
                 self.add_numeric_field(
-                    form, name, label, control, converter, optional=optional, minimum=minimum, maximum=maximum
+                    target_form, name, label, control, converter, optional=optional, minimum=minimum, maximum=maximum
                 )
             else:
-                form.addRow(label, control)
+                target_form.addRow(label, control)
         self.model.setToolTip("ElevenLabs speech-to-text model ID. The default is scribe_v2.")
         self.language.setToolTip("Optional language code, such as uz. Leave blank for automatic detection.")
         self.timestamps.setToolTip(
@@ -559,13 +582,18 @@ class TranscriptionPanel(TextOptionsPanel):
         for value, checkbox in self.local_formats.items():
             checkbox.setToolTip(FORMAT_DESCRIPTIONS[value][1] + " Rendered locally from the transcription response.")
             checkbox.toggled.connect(self.timestamps_error.clear)
-            form.addRow("Local output", checkbox)
+            output_form.addRow("Local output", checkbox)
         for checkbox in self.remote_formats.values():
             checkbox.setToolTip("Requested from ElevenLabs during transcription; a new request may incur charges.")
-            form.addRow("Provider output", checkbox)
+            output_form.addRow("Provider output", checkbox)
         layout = self.layout()
         assert isinstance(layout, QFormLayout)
         layout.insertRow(0, group)
+
+    def set_available_width(self, width: int) -> None:
+        wide = width >= 850
+        self.recognition_grid.addWidget(self.output_group, 0 if wide else 1, 1 if wide else 0)
+        self.recognition_grid.addWidget(self.advanced_group, 1 if wide else 2, 0, 1, 2 if wide else 1)
 
     def validate_transcription_text(self) -> None:
         self.model_error.clear()

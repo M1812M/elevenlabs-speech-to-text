@@ -13,7 +13,11 @@
   "python.analysis.extraPaths": [
     "${workspaceFolder}/src"
   ],
-  "ruff.importStrategy": "fromEnvironment",
+  "ruff.path": [
+    "${workspaceFolder}/.venv/bin/ruff",
+    "${workspaceFolder}/.venv/Scripts/ruff.exe"
+  ],
+  "ruff.importStrategy": "useBundled",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff"
   }

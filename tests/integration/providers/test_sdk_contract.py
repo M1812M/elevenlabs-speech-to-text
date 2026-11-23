@@ -78,3 +78,79 @@ def test_locked_sdk_api_error_exposes_retry_headers_directly(tmp_path: Path) -> 
         ElevenLabsProvider(client=Client()).transcribe(source, TranscriptionOptions())
 
     assert caught.value.retry_after_seconds == 2.5
+
+
+def test_transcription_requests_an_uncompressed_response(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("elevenlabs")
+    import elevenlabs.client
+    import httpx
+
+    real_client = elevenlabs.client.ElevenLabs
+    seen = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("accept-encoding"))
+        # Model a response path that mishandles compressed content. It returns
+        # plain JSON when the client requests identity encoding.
+        body = b'{"language_code":"en","language_probability":0.99,"text":"hello","words":[]}'
+        headers = {} if seen[-1] == "identity" else {"content-encoding": "gzip"}
+        return httpx.Response(200, headers=headers, content=body)
+
+    transport = httpx.MockTransport(handle)
+    client = httpx.Client(transport=transport)
+    monkeypatch.setattr(elevenlabs.client, "ElevenLabs", lambda **kwargs: real_client(httpx_client=client, **kwargs))
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"fake audio")
+    try:
+        result = ElevenLabsProvider(api_key="test-key").transcribe(audio, TranscriptionOptions())
+    finally:
+        client.close()
+    assert result["text"] == "hello"
+    assert seen == ["identity"]
+
+
+def test_unreadable_compressed_response_explains_transcription_failure(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("elevenlabs")
+    import elevenlabs.client
+    import httpx
+
+    from elevenlabs_toolkit.providers import ProviderResponseError
+
+    real_client = elevenlabs.client.ElevenLabs
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("accept-encoding"))
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(b"plain response"))
+
+    audio = tmp_path / "sample.flac"
+    audio.write_bytes(b"media")
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr(
+            elevenlabs.client, "ElevenLabs", lambda **kwargs: real_client(httpx_client=http_client, **kwargs)
+        )
+        with pytest.raises(ProviderResponseError, match="Could not read the ElevenLabs response"):
+            ElevenLabsProvider(api_key="test-key").transcribe(audio, TranscriptionOptions())
+
+    assert calls == ["identity"]
+
+
+def test_sdk_does_not_retry_outside_toolkit_request_budget(tmp_path: Path) -> None:
+    pytest.importorskip("elevenlabs")
+    import httpx
+    from elevenlabs.client import ElevenLabs
+
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.method)
+        return httpx.Response(503, headers={"retry-after": "0.01"}, json={"detail": "Unavailable"})
+
+    audio = tmp_path / "retry-check.flac"
+    audio.write_bytes(b"test audio")
+    with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+        sdk = ElevenLabs(api_key="test-key", httpx_client=transport)
+        with pytest.raises(ProviderTransientError):
+            ElevenLabsProvider(client=sdk).transcribe(audio, TranscriptionOptions())
+
+    assert requests == ["POST"]

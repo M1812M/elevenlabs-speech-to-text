@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import zlib
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -91,7 +92,8 @@ class ElevenLabsProvider:
         try:
             with stream:
                 client = self.client
-                result = client.speech_to_text.convert(file=stream, **kwargs)
+                # Keep the SDK from exceeding the Toolkit's previewed request budget.
+                result = client.speech_to_text.convert(file=stream, request_options={"max_retries": 0}, **kwargs)
         except ProviderError:
             raise
         except Exception as exc:  # SDK exception types must not leak into this boundary.
@@ -103,7 +105,9 @@ class ElevenLabsProvider:
             from elevenlabs.client import ElevenLabs
         except (ImportError, ModuleNotFoundError) as exc:
             raise ProviderDependencyError(
-                "ElevenLabs transcription requires the optional 'elevenlabs' package"
+                "ElevenLabs transcription requires the optional 'elevenlabs' package. "
+                "From the project folder, run: uv run --locked --extra stt python run_toolkit.py transcribe "
+                "(add your input path and options)."
             ) from exc
 
         api_key = resolve_api_key(
@@ -112,7 +116,7 @@ class ElevenLabsProvider:
             environ=self._environ,
         )
         try:
-            return ElevenLabs(api_key=api_key)
+            return ElevenLabs(api_key=api_key, headers={"Accept-Encoding": "identity"})
         except Exception as exc:
             classified = _classified_error(exc)
             if type(classified) is ProviderError:
@@ -320,6 +324,23 @@ def _parse_dotenv(text: str) -> dict[str, str]:
 
 def _classified_error(exc: Exception) -> ProviderError:
     status = _status_code(exc)
+    body = getattr(exc, "body", None)
+    detail = body.get("detail") if isinstance(body, Mapping) else None
+    if isinstance(detail, Mapping) and detail.get("status") == "api_key_id_used_as_api_key":
+        return ProviderCredentialError(
+            "ElevenLabs received a key ID. Set ELEVENLABS_API_KEY to the secret starting with 'sk_' "
+            "shown when you create or rotate an ElevenLabs API key."
+        )
+    if isinstance(detail, Mapping) and detail.get("status") == "missing_permissions":
+        return ProviderCredentialError(
+            "The ElevenLabs API key lacks permission for this request. "
+            "Enable Speech to Text access for the key in ElevenLabs, then retry."
+        )
+    if isinstance(exc, zlib.error) or isinstance(exc.__cause__, zlib.error):
+        return ProviderResponseError(
+            "Could not read the ElevenLabs response because its compression was invalid. "
+            "Check your ElevenLabs usage before retrying this file."
+        )
     message = str(exc) or type(exc).__name__
     if status in {401, 403}:
         return ProviderCredentialError(f"ElevenLabs rejected the credentials ({status}): {message}")

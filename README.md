@@ -15,19 +15,28 @@ JSON. It does not create a separate cache manifest or persistent lock file.
 Create `.env` in the project root:
 
 ```dotenv
-ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_API_KEY=your_secret_key_here
 ```
 
-Then put media in `media` and run:
+Use the secret starting with `sk_` shown when you create or rotate an
+ElevenLabs API key.
+
+Then put media in `media` and run this from the project folder. uv installs
+the locked ElevenLabs SDK in the project environment on first use.
 
 ```powershell
-python .\run_toolkit.py transcribe
+uv run --locked --extra stt python run_toolkit.py transcribe
 ```
 
 That command recursively finds supported media below `media`, transcribes every
 selected file, and writes one reusable JSON transcript per source to `media`.
 Existing JSON transcripts are replaced because `transcribe` means “request a
 fresh transcription.”
+
+Once the SDK is installed in the project `.venv`, `python run_toolkit.py transcribe`
+also works. The launcher uses that environment if the current Python cannot
+find ElevenLabs. To keep both the CLI and desktop dependencies available when
+syncing with uv, use `uv sync --locked --extra stt --extra gui`.
 
 Preview the exact files, outputs, and maximum API attempts without contacting
 ElevenLabs:
@@ -44,7 +53,7 @@ python .\run_toolkit.py --json transcribe --dry-run
 | Output when omitted | `./media` |
 | Directory scanning | Recursive |
 | Transcription output | JSON only |
-| Credentials file | `./.env` |
+| Credentials file | `./.env`, with the project’s `.env` as a fallback when launched via `run_toolkit.py` |
 | Model | `scribe_v2` |
 | Timestamps | Character |
 | Existing transcription outputs | Replace |
@@ -327,30 +336,42 @@ project folder: it uses the project `.venv` if the current Python does not
 have PySide6 installed.
 
 Choose Transcribe, Convert Script, Export, Clean, Inspect, or Configuration
-in the sidebar. Add files or folders with the buttons or drag and drop.
+in the sidebar. Add files or folders with the buttons or drop them onto the
+batch table or the surrounding workspace. The **Inputs** count updates as soon
+as a drop is accepted. Open **Inputs** to review or remove your selections, or
+choose **Preview** to populate the batch table.
+Use **Job Settings…** for folder filters and workflow options, and **Show
+Details** to expand the full batch message or preview. In Transcribe, language
+and **Additional Formats** are available above the table. In Export, use the
+profile and **Output Formats** controls there.
 The selected project configuration folder is remembered across launches and
 is included in named presets. If a preset's project folder is unavailable,
 choose or restore the folder before loading it.
-Folder filters apply within selected folders. Preview lists planned destinations
+In **Job Settings…**, **Input selection** controls folder discovery and
+**Batch behavior** controls conflicts, stop-on-error, report detail, and
+review. Folder filters apply within selected folders. Preview lists planned destinations
 and API requests, including existing-file conflicts under the error policy.
-For Transcribe and Export, **Review before running** adds a
+For Transcribe and Export, **Batch behavior → Review before running** adds a
 confirmation step before the planned job starts.
 Changing inputs or settings marks a displayed preview as out of date; run
 Preview again to check the new plan. Starting a batch always plans it again.
 
-The batch table lists discovered inputs, output paths, statuses, and errors.
+The batch table shows filenames, output names, and statuses. Open a row with
+Enter or double-click, or use **More Actions → View Selected File Details…**,
+to see the full paths and any error message.
 The preview, stop, and start buttons stay visible at the bottom while the main
 panel scrolls in a smaller window.
 Use **Open Output Folder** to locate the shared output folder, or select a row
-first when the batch has several destinations. Use **Save Batch Report** to save the displayed rows as JSON. The report
+first when the batch has several destinations. Use **More Actions → Save Batch Report…** to save the displayed rows as JSON. The report
 does not overwrite an existing file. **Stop After File** stops before
 the next file; rows not processed are marked **Not run**.
 
-The **Preferences** menu saves, loads and deletes named presets, and resets settings.
+**Configuration → Presets** and the **Preferences** menu let you save, load,
+and delete named presets and reset settings.
 Presets contain workflow settings and the selected project folder, but never
 the credentials-file field or API key. **Reset to Defaults** clears the current
 credentials-file selection as well as workflow settings; saved presets remain.
-**Show Effective Settings** displays the
+**More Actions → Show Effective Settings** displays the
 selected profile's settings, workflow overrides, effective values and the source
 of each value (default, user, project, profile or workflow override).
 
@@ -425,26 +446,26 @@ QT_QPA_PLATFORM=offscreen 'dist/ElevenLabs Toolkit.app/Contents/MacOS/ElevenLabs
 ```
 
 Open the resulting app from Finder. The app defaults to your home directory as
-its configuration context; use Configuration to select a project folder and
-Transcribe's **Credentials file** field to select an existing `.env` file.
+its configuration context; use **Configuration → Choose Project Folder** to
+select a project folder. To use a different credentials file, choose
+**Configuration → Choose Credentials File…** and select the existing `.env`
+file. The same selection is also available in Transcribe’s advanced recognition
+settings.
 The app's **Help → Credentials and API Costs** menu also explains this setup.
-The file should contain `ELEVENLABS_API_KEY=your-key` on its own line. Leave
+The file should contain `ELEVENLABS_API_KEY=your-key` on its own line. Use the
+secret starting with `sk_` shown when you create or rotate the key. Leave
 the field empty to use `.env` in the selected project folder. An API key in the
 process environment takes precedence. The GUI does not save the selected
 credentials-file path in preferences or presets, so select it again after
 restarting if it differs from the project default. On macOS, press
 Command-Shift-Period in the file picker to show hidden `.env` files.
-The local build is not notarized for distribution. Build on the destination
-platform; Windows packaging has not yet been verified.
+The local macOS build is an unnotarized development build. Build on the
+destination platform.
 
-CI runs desktop tests and builds app artifacts on macOS and Windows. The macOS
-job has built, offline-tested and uploaded an app bundle; the downloaded bundle
-also passed the offline self-test locally. The user confirmed that a local
-packaged app opens, resizes, and keeps its bottom buttons visible in a small
-window; other native interactions remain to be verified.
-It is an unnotarized development build. The latest Linux desktop tests passed;
-the Windows job failed during GUI tests before packaging, so its app build remains
-unverified. Local fixes for the Windows failures need a new CI run.
+The [desktop validation run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/45143455643)
+passed Linux and Windows GUI checks and tested the extracted macOS and Windows
+packages offline. The local macOS app also opens, resizes, and keeps its bottom
+buttons visible in a small window.
 Artifacts from successful jobs are available on the corresponding
 [GitHub Actions run](https://github.com/M1812M/elevenlabs-speech-to-text/actions).
 A [manual desktop checklist](docs/desktop-manual-checks.md) covers visible
