@@ -1178,6 +1178,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(footer, 1, 1)
 
         self.setCentralWidget(root)
+        self.setAcceptDrops(True)
         self.add_files.clicked.connect(self.select_files)
         self.add_folder.clicked.connect(self.select_folder)
         self.remove.clicked.connect(self.remove_selected)
@@ -1765,6 +1766,30 @@ class MainWindow(QMainWindow):
             review=self.review_before_running.isChecked(),
         )
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        self.dragMoveEvent(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if (
+            self.active_workflow != 5
+            and self.start.isEnabled()
+            and any(url.isLocalFile() for url in event.mimeData().urls())
+        ):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self.active_workflow == 5 or not self.start.isEnabled():
+            event.ignore()
+            return
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.add_paths(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
     def add_paths(self, paths: list[Path]) -> None:
         changed = False
         for path in paths:
@@ -1773,7 +1798,9 @@ class MainWindow(QMainWindow):
                 self.paths.append(path)
                 self.file_list.addItem(str(path))
                 changed = True
-        self.details.setPlainText(f"{len(self.paths)} file(s) or folder(s) selected")
+        count = len(self.paths)
+        selected = "1 input selected" if count == 1 else f"{count} inputs selected"
+        self.details.setPlainText(f"{selected}. Choose Preview to see the batch plan.")
         if changed:
             self.invalidate_preview()
         self.update_output_warning()
@@ -2278,6 +2305,7 @@ def self_test() -> int:
     from tempfile import TemporaryDirectory
 
     import elevenlabs  # noqa: F401 - verify the optional SDK is included in the bundle
+    from PySide6.QtCore import QMimeData, QPoint, QPointF
 
     app = QApplication.instance() or QApplication(["elevenlabs-toolkit-self-test"])
     with TemporaryDirectory(prefix="elevenlabs-desktop-test-") as temporary:
@@ -2291,7 +2319,18 @@ def self_test() -> int:
             window.navigation.setCurrentRow(row)
             app.processEvents()
         window.navigation.setCurrentRow(1)
-        window.add_paths([source])
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(source))])
+        drag_args = (Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        viewport = window.main_scroll.viewport()
+        enter = QDragEnterEvent(QPoint(5, 5), *drag_args)
+        move = QDragMoveEvent(QPoint(6, 6), *drag_args)
+        drop = QDropEvent(QPointF(6, 6), *drag_args)
+        for event in (enter, move, drop):
+            app.sendEvent(viewport, event)
+        if not all(event.isAccepted() for event in (enter, move, drop)) or window.paths != [source.resolve()]:
+            window.close()
+            raise RuntimeError("Desktop self-test could not drop an input onto the workspace")
         output = source.resolve().parent / "Output" / "sample CYR.srt"
         window.report_mode.setCurrentText("JSON")
         window.launch_worker(preview_only=True, content_preview=True)

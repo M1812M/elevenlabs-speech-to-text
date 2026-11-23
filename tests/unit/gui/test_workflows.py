@@ -5726,3 +5726,35 @@ def test_gui_and_cli_transcribe_through_real_sdk_with_uncompressed_response(tmp_
     assert json.loads(transcript)["text"] == "hello"
     assert audio.read_bytes() == original
     window.close()
+
+
+@pytest.mark.parametrize("surface", ["workspace", "table"])
+def test_file_drop_reaches_workspace_and_shows_next_step(tmp_path: Path, monkeypatch, surface: str) -> None:
+    from PySide6.QtCore import QMimeData, QPoint, QPointF, QUrl
+    from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    source = tmp_path / "audio.flac"
+    source.touch()
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(source))])
+    target = window.main_scroll.viewport() if surface == "workspace" else window.batch_table.viewport()
+    args = (Qt.DropAction.CopyAction, data, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    enter = QDragEnterEvent(QPoint(5, 5), *args)
+    move = QDragMoveEvent(QPoint(6, 6), *args)
+    drop = QDropEvent(QPointF(5, 5), *args)
+    app.sendEvent(target, enter)
+    app.sendEvent(target, move)
+    app.sendEvent(target, drop)
+    assert enter.isAccepted()
+    assert move.isAccepted()
+    assert drop.isAccepted()
+    assert window.paths == [source]
+    assert window.inputs_button.text() == "Inputs (1)"
+    assert "Preview" in window.details_summary.text()
+    assert source.exists()
+    window.close()
