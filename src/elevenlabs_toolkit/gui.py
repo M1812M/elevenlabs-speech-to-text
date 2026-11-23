@@ -826,8 +826,10 @@ class MainWindow(QMainWindow):
         root = QWidget()
         outer = QGridLayout(root)
         self.navigation = QListWidget()
-        self.navigation.addItems(["Transcribe", "Convert Script", "Export", "Clean", "Inspect", "Configuration"])
-        self.navigation.setFixedWidth(180)
+        workflows = ["Transcribe", "Convert Script", "Export", "Clean", "Inspect", "Configuration"]
+        self.navigation.addItems(workflows)
+        label_width = max(self.navigation.fontMetrics().horizontalAdvance(label) for label in workflows)
+        self.navigation.setFixedWidth(label_width + 28)
         self.navigation.setCurrentRow(0)
         outer.addWidget(self.navigation, 0, 0, 2, 1)
         self.main_scroll = QScrollArea()
@@ -990,7 +992,7 @@ class MainWindow(QMainWindow):
             checkbox.setToolTip(description + " Rendered offline from transcript JSON.")
             checkbox.setChecked(artifact_format is ArtifactFormat.SRT)
             self.export_formats[artifact_format] = checkbox
-            format_row.addWidget(checkbox, index // 3, index % 3)
+            format_row.addWidget(checkbox, index // 2, index % 2)
         self.export_text = TextOptionsPanel(advanced=True)
         self.export_formats[ArtifactFormat.COMBINED_TXT].toggled.connect(
             lambda checked: None if checked else self.export_text.combined_name_error.clear()
@@ -1004,7 +1006,9 @@ class MainWindow(QMainWindow):
         self.clean_text = TextOptionsPanel(clean=True)
         clean_layout.addWidget(self.clean_text)
         self.options.addWidget(clean_panel)
-        self.options.addWidget(QLabel("Validate JSON and show language, timing, speakers, and transcript counts."))
+        inspect_description = QLabel("Validate JSON and show language, timing, speakers, and transcript counts.")
+        inspect_description.setWordWrap(True)
+        self.options.addWidget(inspect_description)
         config_panel = QWidget()
         config_layout = QVBoxLayout(config_panel)
         self.project_label = QLabel(str(self.project_directory))
@@ -1417,7 +1421,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Using the Toolkit",
-            "Choose a workflow and drop files or folders onto the batch table. "
+            "Choose a workflow and drop files or folders onto the batch table or surrounding workspace. "
             "Open Inputs to review your selections or Job Settings for advanced options. "
             "Use Preview to check destinations and planned API requests.\n\n"
             "Files are saved in an Output subfolder beside each source by default. "

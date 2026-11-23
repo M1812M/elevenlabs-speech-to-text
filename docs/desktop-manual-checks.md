@@ -6,9 +6,10 @@ or paid transcription request is needed.
 
 1. Open the packaged app from the file manager. Confirm a window appears without
    a terminal and the workflow names and controls are readable.
-2. Select **Convert Script**. Add an SRT file and a folder by drag and drop;
-   open **Inputs** and verify both selections appear. Use the keyboard to select and remove an input,
-   then add it back.
+2. Select **Convert Script**. Drag an SRT file onto the batch table and a
+   folder onto the surrounding workspace. Check that the **Inputs** count
+   updates for each drop. Open **Inputs**, remove one selection with the
+   keyboard, then add it back.
 3. Select Cyrillic, choose **Use Output subfolder**, and press **Preview**.
    Check destinations and, with **Preview Content**, check subtitle text and
    timestamps. Confirm neither preview creates or modifies files.

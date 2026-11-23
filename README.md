@@ -337,7 +337,9 @@ have PySide6 installed.
 
 Choose Transcribe, Convert Script, Export, Clean, Inspect, or Configuration
 in the sidebar. Add files or folders with the buttons or drop them onto the
-batch table. Open **Inputs** to review or remove the original selections.
+batch table or the surrounding workspace. The **Inputs** count updates as soon
+as a drop is accepted. Open **Inputs** to review or remove your selections, or
+choose **Preview** to populate the batch table.
 Use **Job Settings…** for folder filters and workflow options, and **Show
 Details** to expand the full batch message or preview. In Transcribe, language
 and **Additional Formats** are available above the table. In Export, use the
@@ -460,7 +462,7 @@ Command-Shift-Period in the file picker to show hidden `.env` files.
 The local macOS build is an unnotarized development build. Build on the
 destination platform.
 
-The [desktop validation run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/44720692490)
+The [desktop validation run](https://github.com/M1812M/elevenlabs-speech-to-text/actions/runs/45143455643)
 passed Linux and Windows GUI checks and tested the extracted macOS and Windows
 packages offline. The local macOS app also opens, resizes, and keeps its bottom
 buttons visible in a small window.
