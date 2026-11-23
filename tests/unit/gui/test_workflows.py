@@ -1615,11 +1615,15 @@ def test_focus_reveals_center_of_wide_control(monkeypatch) -> None:
     field.setMinimumWidth(1400)
     for _ in range(20):
         app.processEvents()
-        if window.options_scroll.horizontalScrollBar().maximum() > 0:
+        # A platform may already have a horizontal scroll range before this field grows.
+        if window.options.width() >= field.minimumWidth():
             break
+    assert window.options.width() >= field.minimumWidth()
     assert window.options_scroll.horizontalScrollBar().maximum() > 0
+    window.activateWindow()
     field.setFocus()
     app.processEvents()
+    assert app.focusWidget() is field
     window.reveal_focused_control()
     app.processEvents()
     viewport = window.main_scroll.viewport()
